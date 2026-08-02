@@ -16,6 +16,7 @@ use std::collections::VecDeque;
 use std::io::stdout;
 use std::sync::mpsc::Receiver;
 use std::sync::Arc;
+use tauri_app_lib::app_config::ServerPrefs;
 use tauri_app_lib::server::ServerState;
 use tauri_app_lib::stats::AudioMetrics;
 use tauri_app_lib::tcp_server::DeviceInfo;
@@ -40,6 +41,10 @@ pub struct TuiApp {
     pub theme: Theme,
     /// Local IPs (sorted, virtual adapters filtered) shown as connect hints.
     pub ips: Vec<String>,
+    /// Shared connection settings (server.json), editable on the Connection tab.
+    pub prefs: ServerPrefs,
+    /// Selected row on the Connection tab.
+    pub selected_conn: usize,
 }
 
 impl TuiApp {
@@ -69,6 +74,8 @@ impl TuiApp {
             lang,
             theme: theme::load(),
             ips,
+            prefs: tauri_app_lib::app_config::load_server_prefs(),
+            selected_conn: 0,
         }
     }
 
@@ -123,6 +130,7 @@ impl TuiApp {
             self.t("tab_dashboard"),
             self.t("tab_audio"),
             self.t("tab_chain"),
+            self.t("tab_conn"),
             self.t("tab_logs"),
         ]
     }
@@ -172,6 +180,7 @@ impl TuiApp {
             0 => self.render_dashboard(frame, chunks[2], state),
             1 => self.render_settings(frame, chunks[2]),
             2 => self.render_chain(frame, chunks[2]),
+            3 => self.render_connection(frame, chunks[2]),
             _ => self.render_logs(frame, chunks[2]),
         }
 
@@ -212,10 +221,11 @@ impl TuiApp {
             .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
             .split(area);
 
-        // Left column: status list on top, spectrum below
+        // Left column: status list on top, spectrum below (length sized so the
+        // IP rows are never clipped; spectrum takes the rest)
         let left_col = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(9), Constraint::Min(3)])
+            .constraints([Constraint::Length(11), Constraint::Min(3)])
             .split(chunks[0]);
 
         // Left: server + device status
@@ -349,6 +359,7 @@ impl TuiApp {
     /// Cava-style vertical bars: each column's height = spectrum band value.
     /// Color follows the theme gradient bottom (cool) to top (warm).
     fn render_spectrum(&self, frame: &mut Frame, area: Rect) {
+        let theme = self.theme;
         let width = area.width as usize;
         let height = area.height as usize;
         if width == 0 || height == 0 {
@@ -362,6 +373,23 @@ impl TuiApp {
                 self.spectrum.get(src).copied().unwrap_or(0.0).min(1.0)
             })
             .collect();
+
+        let block = Block::default().borders(Borders::ALL).title(self.t("spectrum"));
+        let idle = bands.iter().all(|v| *v < 0.01);
+        if idle && height >= 3 {
+            // Placeholder so the block does not look broken while idle
+            let mut lines: Vec<Line> = vec![Line::from("")];
+            let text = format!("  {} ", self.t("spectrum_wait"));
+            lines.push(Line::from(Span::styled(
+                text,
+                Style::default().fg(theme.secondary.to_color()),
+            )));
+            while lines.len() < height {
+                lines.push(Line::from(""));
+            }
+            frame.render_widget(Paragraph::new(lines).block(block), area);
+            return;
+        }
 
         let mut lines: Vec<Line> = Vec::with_capacity(height);
         for row in 0..height {
@@ -378,7 +406,6 @@ impl TuiApp {
                 Style::default().fg(color),
             )));
         }
-        let block = Block::default().borders(Borders::ALL).title(self.t("spectrum"));
         frame.render_widget(Paragraph::new(lines).block(block), area);
     }
 
@@ -483,6 +510,71 @@ impl TuiApp {
             list,
             area,
             &mut ratatui::widgets::ListState::default().with_selected(Some(self.chain_index)),
+        );
+    }
+
+    /// Connection settings tab: edit shared server.json prefs.
+    fn render_connection(&mut self, frame: &mut Frame, area: Rect) {
+        let theme = self.theme;
+        let mode_label = match self.prefs.mode.as_str() {
+            "wifi" => self.t("mode_wifi"),
+            "usb" => self.t("mode_usb"),
+            "web" => self.t("mode_web"),
+            _ => self.t("mode_unknown"),
+        };
+        let bind_label = if self.prefs.auto_bind {
+            self.t("conn_auto")
+        } else {
+            format!("{} ({})", self.t("conn_manual"), self.prefs.bind_address)
+        };
+        let items: Vec<ListItem> = vec![
+            ListItem::new(format!(
+                "{}:  {}",
+                self.t("conn_mode"),
+                mode_label
+            )),
+            ListItem::new(format!(
+                "{}:  {}",
+                self.t("conn_port"),
+                self.prefs.port
+            )),
+            ListItem::new(format!(
+                "{}:  {}",
+                self.t("conn_web_port"),
+                self.prefs.web_port
+            )),
+            ListItem::new(format!("{}:  {}", self.t("conn_bind"), bind_label)),
+            ListItem::new(format!(
+                "{}:  {}",
+                self.t("conn_device"),
+                if self.prefs.output_device.is_empty() {
+                    self.t("none")
+                } else {
+                    self.prefs.output_device.clone()
+                }
+            )),
+            ListItem::new(""),
+            ListItem::new(Line::from(Span::styled(
+                self.t("conn_hint"),
+                Style::default().fg(theme.secondary.to_color()),
+            ))),
+        ];
+        let list = List::new(items)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(self.t("tab_conn")),
+            )
+            .highlight_style(
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(theme.primary.to_color()),
+            )
+            .highlight_symbol("> ");
+        frame.render_stateful_widget(
+            list,
+            area,
+            &mut ratatui::widgets::ListState::default().with_selected(Some(self.selected_conn)),
         );
     }
 
@@ -591,6 +683,7 @@ fn handle_key(app: &mut TuiApp, key: KeyEvent, state: &ServerState) -> bool {
         }
         KeyCode::Up => match app.tab {
             1 => app.selected_setting = app.selected_setting.saturating_sub(1),
+            3 => app.selected_conn = app.selected_conn.saturating_sub(1),
             2 => {
                 let chain = &mut app.settings.processing_chain;
                 if app.chain_index > 1 {
@@ -604,6 +697,9 @@ fn handle_key(app: &mut TuiApp, key: KeyEvent, state: &ServerState) -> bool {
         KeyCode::Down => match app.tab {
             1 => {
                 app.selected_setting = (app.selected_setting + 1).min(6);
+            }
+            3 => {
+                app.selected_conn = (app.selected_conn + 1).min(4);
             }
             2 => {
                 let chain = &mut app.settings.processing_chain;
@@ -627,6 +723,28 @@ fn handle_key(app: &mut TuiApp, key: KeyEvent, state: &ServerState) -> bool {
                     _ => {}
                 }
                 sync_settings(&app.settings, state);
+            } else if app.tab == 3 {
+                match app.selected_conn {
+                    // Mode: cycle wifi -> usb -> web -> wifi
+                    0 => {
+                        app.prefs.mode = match app.prefs.mode.as_str() {
+                            "wifi" => "usb".to_string(),
+                            "usb" => "web".to_string(),
+                            _ => "wifi".to_string(),
+                        };
+                        app.mode.clone_from(&app.prefs.mode);
+                        sync_server_prefs(app);
+                    }
+                    // Bind: toggle auto/manual
+                    3 => {
+                        app.prefs.auto_bind = !app.prefs.auto_bind;
+                        if !app.prefs.auto_bind && app.prefs.bind_address.is_empty() {
+                            app.prefs.bind_address = "0.0.0.0".to_string();
+                        }
+                        sync_server_prefs(app);
+                    }
+                    _ => {}
+                }
             }
         }
         KeyCode::Char('-') | KeyCode::Char('_') => {
@@ -640,18 +758,46 @@ fn handle_key(app: &mut TuiApp, key: KeyEvent, state: &ServerState) -> bool {
                     _ => {}
                 }
                 sync_settings(&app.settings, state);
+            } else if app.tab == 3 {
+                match app.selected_conn {
+                    1 => {
+                        app.prefs.port = app.prefs.port.saturating_sub(10).max(1024);
+                        app.port = app.prefs.port;
+                        sync_server_prefs(app);
+                    }
+                    2 => {
+                        app.prefs.web_port = app.prefs.web_port.saturating_sub(10).max(1024);
+                        sync_server_prefs(app);
+                    }
+                    _ => {}
+                }
             }
         }
-        KeyCode::Char('+') | KeyCode::Char('=') if app.tab == 1 => {
-            match app.selected_setting {
-                0 => app.settings.gain = (app.settings.gain + 1.0).clamp(-50.0, 50.0),
-                6 => {
-                    app.settings.output_buffer_ms =
-                        (app.settings.output_buffer_ms + 100).clamp(100, 1200);
+        KeyCode::Char('+') | KeyCode::Char('=') => {
+            if app.tab == 1 {
+                match app.selected_setting {
+                    0 => app.settings.gain = (app.settings.gain + 1.0).clamp(-50.0, 50.0),
+                    6 => {
+                        app.settings.output_buffer_ms =
+                            (app.settings.output_buffer_ms + 100).clamp(100, 1200);
+                    }
+                    _ => {}
                 }
-                _ => {}
+                sync_settings(&app.settings, state);
+            } else if app.tab == 3 {
+                match app.selected_conn {
+                    1 => {
+                        app.prefs.port = app.prefs.port.saturating_add(10);
+                        app.port = app.prefs.port;
+                        sync_server_prefs(app);
+                    }
+                    2 => {
+                        app.prefs.web_port = app.prefs.web_port.saturating_add(10);
+                        sync_server_prefs(app);
+                    }
+                    _ => {}
+                }
             }
-            sync_settings(&app.settings, state);
         }
         _ => {}
     }
@@ -668,4 +814,9 @@ fn sync_settings(settings: &AudioDspSettings, state: &ServerState) {
 
 fn sync_chain(settings: &AudioDspSettings, state: &ServerState) {
     sync_settings(settings, state);
+}
+
+/// Persist the edited connection settings to the shared server.json.
+fn sync_server_prefs(app: &TuiApp) {
+    let _ = tauri_app_lib::app_config::save_server_prefs(&app.prefs);
 }
