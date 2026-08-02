@@ -1140,6 +1140,12 @@ onMounted(async () => {
   handleOpenState(props.isOpen);
   refreshModeStatus();
   saveUiPrefs();
+  // Refresh from the shared settings.json so CLI-side changes show up
+  try {
+    await loadSettings();
+  } catch (e) {
+    console.error('Failed to reload settings on open:', e);
+  }
   try {
     appVersion.value = await invoke('get_app_version');
   } catch (e) {

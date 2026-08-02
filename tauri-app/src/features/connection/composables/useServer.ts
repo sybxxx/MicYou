@@ -1,4 +1,4 @@
-import { ref, computed, onMounted, onUnmounted, type Ref } from 'vue';
+import { ref, computed, onMounted, onUnmounted, watch, type Ref } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { useStorage } from '@vueuse/core';
@@ -176,7 +176,7 @@ export function useServer(options?: { audioLevel?: Ref<number>; isMuted?: Ref<bo
         if (options?.audioLevel) options.audioLevel.value = 0;
         // Restore original input device on macOS when using BlackHole virtual audio
         if (isMacOS) {
-          try { await invoke('restore_input_device'); } catch {}
+          try { await invoke('restore_input_device'); } catch { /* best-effort cleanup, ignore */ }
         }
       }
     } else {
@@ -193,12 +193,12 @@ export function useServer(options?: { audioLevel?: Ref<number>; isMuted?: Ref<bo
         });
         // Auto-switch to BlackHole input on macOS for seamless virtual audio loopback
         if (isMacOS) {
-          try { await invoke('set_blackhole_as_input'); } catch {}
+          try { await invoke('set_blackhole_as_input'); } catch { /* best-effort cleanup, ignore */ }
         }
         if (activeConnectionMode.value === 'usb') {
           const result = await invoke<{ type: string; devices?: AdbDevice[] }>('enable_usb_mode', { port: activePort.value, deviceSerial: null });
           if (result.type === 'MultipleDevices') {
-            try { await invoke('stop_server'); } catch {}
+            try { await invoke('stop_server'); } catch { /* best-effort cleanup, ignore */ }
             adbDevices.value = result.devices || [];
             pendingUsbPort.value = activePort.value || Number(serverPort.value);
             showDeviceSelector.value = true;
@@ -207,7 +207,7 @@ export function useServer(options?: { audioLevel?: Ref<number>; isMuted?: Ref<bo
             activePort.value = null;
             return;
           } else if (result.type === 'NoDevices') {
-            try { await invoke('stop_server'); } catch {}
+            try { await invoke('stop_server'); } catch { /* best-effort cleanup, ignore */ }
             serverState.value = 'idle';
             activeConnectionMode.value = null;
             activePort.value = null;
@@ -228,7 +228,7 @@ export function useServer(options?: { audioLevel?: Ref<number>; isMuted?: Ref<bo
         serverState.value = 'connecting';
       } catch (e: any) {
         console.error(e);
-        try { await invoke('stop_server'); } catch {}
+        try { await invoke('stop_server'); } catch { /* best-effort cleanup, ignore */ }
         const msg = typeof e === 'string' ? e : e?.message ?? String(e);
         const type = analyzeError(msg);
         errorDetails.value = generateErrorDetails(type, msg, connectionMode.value, Number(serverPort.value), selectedIp.value, t);
@@ -300,7 +300,7 @@ export function useServer(options?: { audioLevel?: Ref<number>; isMuted?: Ref<bo
         if (activeConnectionMode.value === 'usb') {
           const result = await invoke<{ type: string; devices?: AdbDevice[] }>('enable_usb_mode', { port: activePort.value, deviceSerial: null });
           if (result.type === 'MultipleDevices') {
-            try { await invoke('stop_server'); } catch {}
+            try { await invoke('stop_server'); } catch { /* best-effort cleanup, ignore */ }
             adbDevices.value = result.devices || [];
             pendingUsbPort.value = activePort.value || Number(serverPort.value);
             showDeviceSelector.value = true;
@@ -309,7 +309,7 @@ export function useServer(options?: { audioLevel?: Ref<number>; isMuted?: Ref<bo
             activePort.value = null;
             return;
           } else if (result.type === 'NoDevices') {
-            try { await invoke('stop_server'); } catch {}
+            try { await invoke('stop_server'); } catch { /* best-effort cleanup, ignore */ }
             serverState.value = 'idle';
             activeConnectionMode.value = null;
             activePort.value = null;
@@ -322,7 +322,7 @@ export function useServer(options?: { audioLevel?: Ref<number>; isMuted?: Ref<bo
         }
       } catch (e: any) {
         console.error(e);
-        try { await invoke('stop_server'); } catch {}
+        try { await invoke('stop_server'); } catch { /* best-effort cleanup, ignore */ }
         const msg = typeof e === 'string' ? e : e?.message ?? String(e);
         const type = analyzeError(msg);
         errorDetails.value = generateErrorDetails(type, msg, activeConnectionMode.value || connectionMode.value, activePort.value || Number(serverPort.value), selectedIp.value, t);
@@ -354,7 +354,7 @@ export function useServer(options?: { audioLevel?: Ref<number>; isMuted?: Ref<bo
       serverState.value = 'connecting';
     } catch (e: any) {
       console.error(e);
-      try { await invoke('stop_server'); } catch {}
+      try { await invoke('stop_server'); } catch { /* best-effort cleanup, ignore */ }
       const msg = typeof e === 'string' ? e : e?.message ?? String(e);
       const type = analyzeError(msg);
       errorDetails.value = generateErrorDetails(type, msg, 'usb', pendingUsbPort.value, selectedIp.value, t);
@@ -379,7 +379,66 @@ export function useServer(options?: { audioLevel?: Ref<number>; isMuted?: Ref<bo
   let unlistenServerStopped: UnlistenFn | null = null;
   let unlistenWebClients: UnlistenFn | null = null;
 
+  // ---- Shared server prefs (server.json, also read/written by the CLI) ----
+  interface ServerPrefsBackend {
+    port?: number;
+    webPort?: number;
+    mode?: string;
+    bindAddress?: string;
+    autoBind?: boolean;
+    outputDevice?: string;
+  }
+
+  async function loadServerPrefs() {
+    try {
+      const prefs = await invoke<ServerPrefsBackend>('get_server_prefs');
+      if (!prefs) return;
+      if (prefs.port) serverPort.value = prefs.port;
+      if (prefs.webPort) webPort.value = prefs.webPort;
+      if (prefs.mode && ['wifi', 'usb', 'web'].includes(prefs.mode)) {
+        connectionMode.value = prefs.mode as ConnectionMode;
+      }
+      if (prefs.autoBind !== undefined) isAutoBind.value = prefs.autoBind;
+      if (prefs.bindAddress && prefs.bindAddress !== '0.0.0.0') {
+        selectedIp.value = prefs.bindAddress;
+      }
+      if (prefs.outputDevice) {
+        outputDevice.value = prefs.outputDevice;
+        localStorage.setItem('micyou_output_device', prefs.outputDevice);
+      }
+    } catch (e) {
+      console.error('Failed to load server prefs:', e);
+    }
+  }
+
+  let prefsSaveTimer: ReturnType<typeof setTimeout> | null = null;
+  function persistServerPrefs() {
+    if (prefsSaveTimer) clearTimeout(prefsSaveTimer);
+    prefsSaveTimer = setTimeout(() => {
+      void invoke('save_server_prefs', {
+        prefs: {
+          port: Number(serverPort.value),
+          webPort: Number(webPort.value),
+          mode: connectionMode.value,
+          bindAddress: isAutoBind.value ? '0.0.0.0' : selectedIp.value,
+          autoBind: isAutoBind.value,
+          outputDevice: outputDevice.value || '',
+        },
+      }).catch((e) => console.error('Failed to save server prefs:', e));
+    }, 500);
+  }
+  watch(
+    [connectionMode, serverPort, webPort, isAutoBind, selectedIp, outputDevice],
+    persistServerPrefs,
+  );
+
   onMounted(async () => {
+    try {
+      await loadServerPrefs();
+    } catch (e) {
+      console.error('Failed to sync server prefs:', e);
+    }
+
     try {
       networkInfo.value = await invoke<NetworkInfo>('get_network_info');
       if (networkInfo.value && networkInfo.value.ips.length > 0) {
@@ -409,7 +468,7 @@ export function useServer(options?: { audioLevel?: Ref<number>; isMuted?: Ref<bo
       if (serverState.value === 'streaming') {
         const mode = activeConnectionMode.value || connectionMode.value;
         if (mode === 'usb') {
-          try { await invoke('stop_server'); } catch {}
+          try { await invoke('stop_server'); } catch { /* best-effort cleanup, ignore */ }
           serverState.value = 'idle';
           activeConnectionMode.value = null;
           activePort.value = null;

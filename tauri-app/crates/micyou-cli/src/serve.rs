@@ -7,21 +7,41 @@ use tauri_app_lib::commands::system::{start_server_inner, stop_server_inner};
 use tauri_app_lib::server::ServerState;
 
 pub struct ServeArgs {
-    pub port: u16,
-    pub mode: String,
+    pub port: Option<u16>,
+    pub mode: Option<String>,
     pub device: Option<String>,
     pub bind: Option<String>,
     pub no_tui: bool,
 }
 
 /// Run the audio server in the foreground.
-/// With `--tui` this runs the ratatui dashboard; otherwise it prints plain logs.
+/// CLI flags override the shared server.json; otherwise the shared values are used
+/// so GUI and CLI stay in sync.
 pub async fn run(args: ServeArgs) -> Result<(), String> {
     tauri_app_lib::mode_lock::acquire(RunMode::Cli)?;
 
+    // Merge shared server.json prefs with explicit CLI flags
+    let prefs = tauri_app_lib::app_config::load_server_prefs();
+    let port = args.port.unwrap_or(prefs.port);
+    let bind = args.bind.or_else(|| {
+        if prefs.auto_bind {
+            None
+        } else if prefs.bind_address.is_empty() || prefs.bind_address == "0.0.0.0" {
+            None
+        } else {
+            Some(prefs.bind_address.clone())
+        }
+    });
+    let device = args.device.or_else(|| {
+        if prefs.output_device.is_empty() {
+            None
+        } else {
+            Some(prefs.output_device.clone())
+        }
+    });
     // Validate / normalize the connection mode (wifi | usb | web)
-    let mode = match args.mode.as_str() {
-        "wifi" | "usb" | "web" => args.mode.clone(),
+    let mode = match args.mode.as_deref().unwrap_or(&prefs.mode) {
+        "wifi" | "usb" | "web" => args.mode.unwrap_or_else(|| prefs.mode.clone()),
         other => {
             return Err(format!(
                 "invalid mode '{other}' (expected wifi, usb or web)"
@@ -31,8 +51,8 @@ pub async fn run(args: ServeArgs) -> Result<(), String> {
 
     // USB mode: set up adb port forwarding before starting the server
     if mode == "usb" {
-        println!("Setting up USB (adb) mode on port {}", args.port);
-        tauri_app_lib::commands::network::enable_usb_mode(args.port, None)
+        println!("Setting up USB (adb) mode on port {port}");
+        tauri_app_lib::commands::network::enable_usb_mode(port, None)
             .map_err(|e| format!("enable_usb_mode failed: {e}"))?;
     }
 
@@ -44,15 +64,7 @@ pub async fn run(args: ServeArgs) -> Result<(), String> {
         Arc::new(TuiEventSink(tx))
     };
 
-    let result = start_server_inner(
-        &state,
-        args.port,
-        mode.clone(),
-        args.bind,
-        args.device,
-        events.clone(),
-    )
-    .await;
+    let result = start_server_inner(&state, port, mode.clone(), bind, device, events.clone()).await;
 
     match result {
         Ok(message) => println!("{message}"),
@@ -68,7 +80,7 @@ pub async fn run(args: ServeArgs) -> Result<(), String> {
         println!("Stopping server...");
         let _ = stop_server_inner(&state, events).await;
     } else {
-        let tui_result = crate::tui::run_tui(rx, state.clone(), args.port, mode);
+        let tui_result = crate::tui::run_tui(rx, state.clone(), port, mode);
         let _ = stop_server_inner(&state, events).await;
         tui_result?;
     }

@@ -70,14 +70,31 @@ pub fn update_audio_settings(
     }
 }
 
-/// Current DSP settings (loaded from settings.json at startup, updated at runtime).
+/// Current DSP settings.
+/// Prefers the shared settings.json so edits made by the CLI are reflected;
+/// falls back to the in-memory state when the file is unreadable.
 #[tauri::command]
 pub fn get_audio_settings(state: State<'_, ServerState>) -> Result<AudioDspSettings, String> {
+    if std::path::Path::new(&crate::app_config::settings_path()).exists() {
+        return Ok(crate::app_config::load_dsp_settings());
+    }
     state
         .dsp_settings
         .read()
         .map(|s| s.clone())
         .map_err(|e| format!("Failed to read settings: {}", e))
+}
+
+/// Connection-level settings shared with the CLI (server.json).
+#[tauri::command]
+pub fn get_server_prefs() -> crate::app_config::ServerPrefs {
+    crate::app_config::load_server_prefs()
+}
+
+#[tauri::command]
+pub fn save_server_prefs(prefs: crate::app_config::ServerPrefs) -> Result<String, String> {
+    crate::app_config::save_server_prefs(&prefs)?;
+    Ok("Server prefs saved".to_string())
 }
 
 #[tauri::command]

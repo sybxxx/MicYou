@@ -150,6 +150,8 @@ pub fn run() {
             commands::mode::save_ui_prefs,
             commands::mode::save_theme_colors,
             commands::get_audio_settings,
+            commands::get_server_prefs,
+            commands::save_server_prefs,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

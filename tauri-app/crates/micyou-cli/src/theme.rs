@@ -127,7 +127,14 @@ fn derive_gradient(primary: Rgba, secondary: Rgba, tertiary: Rgba) -> [Rgba; 8] 
             secondary.blend(tertiary, (t - 0.5) * 2.0)
         };
         // Brighten toward the top
-        let bright = base.blend(Rgba { r: 255, g: 255, b: 255 }, t * 0.25);
+        let bright = base.blend(
+            Rgba {
+                r: 255,
+                g: 255,
+                b: 255,
+            },
+            t * 0.25,
+        );
         out[i] = bright;
     }
     out

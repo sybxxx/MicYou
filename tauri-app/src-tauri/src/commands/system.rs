@@ -86,6 +86,11 @@ pub async fn start_server(
 ) -> Result<String, String> {
     let events: crate::events::SharedEvents =
         std::sync::Arc::new(crate::events::TauriEventSink(app_handle));
+    // Reload shared settings.json before starting so CLI-side changes apply
+    let file_settings = crate::app_config::load_dsp_settings();
+    if let Ok(mut current) = state.dsp_settings.write() {
+        *current = file_settings;
+    }
     start_server_inner(&state, port, mode, bind_address, output_device, events).await
 }
 

@@ -38,6 +38,12 @@ pub fn theme_path() -> PathBuf {
     config_dir().join("theme.json")
 }
 
+/// server.json: connection-level settings shared by GUI and CLI
+/// (port, mode, bind address, output device).
+pub fn server_prefs_path() -> PathBuf {
+    config_dir().join("server.json")
+}
+
 /// Load DSP settings from settings.json, falling back to defaults.
 pub fn load_dsp_settings() -> AudioDspSettings {
     let path = settings_path();
@@ -112,7 +118,55 @@ pub fn load_theme_colors() -> ThemeColors {
 pub fn save_theme_colors(colors: &ThemeColors) -> Result<(), String> {
     let dir = config_dir();
     fs::create_dir_all(&dir).map_err(|e| format!("create config dir failed: {e}"))?;
-    let json = serde_json::to_string_pretty(colors)
-        .map_err(|e| format!("serialize theme failed: {e}"))?;
+    let json =
+        serde_json::to_string_pretty(colors).map_err(|e| format!("serialize theme failed: {e}"))?;
     fs::write(theme_path(), json).map_err(|e| format!("write theme.json failed: {e}"))
+}
+
+/// Connection-level settings shared between the GUI and the CLI.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ServerPrefs {
+    /// Streaming port for wifi/usb modes.
+    pub port: u16,
+    /// Port for the web (https) mode.
+    pub web_port: u16,
+    /// Connection mode: wifi | usb | web.
+    pub mode: String,
+    /// Bind address ("0.0.0.0" when auto-bind).
+    pub bind_address: String,
+    /// Whether to listen on all interfaces.
+    pub auto_bind: bool,
+    /// Selected output audio device name.
+    pub output_device: String,
+}
+
+impl Default for ServerPrefs {
+    fn default() -> Self {
+        Self {
+            port: 8554,
+            web_port: 8443,
+            mode: "wifi".to_string(),
+            bind_address: "0.0.0.0".to_string(),
+            auto_bind: true,
+            output_device: String::new(),
+        }
+    }
+}
+
+/// Load connection settings from server.json, falling back to defaults.
+pub fn load_server_prefs() -> ServerPrefs {
+    fs::read_to_string(server_prefs_path())
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default()
+}
+
+/// Persist connection settings to server.json (GUI and CLI share this file).
+pub fn save_server_prefs(prefs: &ServerPrefs) -> Result<(), String> {
+    let dir = config_dir();
+    fs::create_dir_all(&dir).map_err(|e| format!("create config dir failed: {e}"))?;
+    let json = serde_json::to_string_pretty(prefs)
+        .map_err(|e| format!("serialize server prefs failed: {e}"))?;
+    fs::write(server_prefs_path(), json).map_err(|e| format!("write server.json failed: {e}"))
 }

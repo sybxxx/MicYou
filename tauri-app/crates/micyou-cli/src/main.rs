@@ -25,12 +25,12 @@ struct Cli {
 enum Commands {
     /// 启动音频服务（默认 TUI 仪表盘，--no-tui 纯日志）
     Serve {
-        /// 音频服务器端口（UDP 端口自动 +1）
-        #[arg(long, default_value_t = 4750)]
-        port: u16,
-        /// 服务模式：wifi | usb | web
-        #[arg(long, default_value = "wifi", value_parser = ["wifi", "usb", "web"])]
-        mode: String,
+        /// 音频服务器端口（UDP 端口自动 +1，默认读共享 server.json）
+        #[arg(long)]
+        port: Option<u16>,
+        /// 服务模式：wifi | usb | web（默认读共享 server.json）
+        #[arg(long, value_parser = ["wifi", "usb", "web"])]
+        mode: Option<String>,
         /// 指定输出音频设备名称
         #[arg(long)]
         device: Option<String>,
@@ -65,6 +65,11 @@ enum Commands {
     },
     /// 列出 ADB 设备
     AdbDevices,
+    /// 读取或修改共享服务器连接设置（port / mode / bindAddress / autoBind / outputDevice）
+    Server {
+        #[command(subcommand)]
+        action: ServerAction,
+    },
     /// 显示配置文件路径
     Config,
 }
@@ -95,6 +100,19 @@ enum ChainAction {
     Set {
         /// 逗号分隔的链路项
         chain: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum ServerAction {
+    /// 显示当前服务器连接设置
+    Get,
+    /// 修改服务器设置，如 `micyou server set port 8554` / `micyou server set mode usb`
+    Set {
+        /// 键名：port / webPort / mode / bindAddress / autoBind / outputDevice
+        key: String,
+        /// 值（数字 / 布尔 / 字符串）
+        value: String,
     },
 }
 
@@ -175,6 +193,13 @@ async fn main() {
             commands::cmd_adb_devices();
             Ok(())
         }
+        Commands::Server { action } => match action {
+            ServerAction::Get => {
+                commands::cmd_server_get();
+                Ok(())
+            }
+            ServerAction::Set { key, value } => commands::cmd_server_set(&key, &value),
+        },
         Commands::Config => {
             commands::cmd_config_path();
             Ok(())

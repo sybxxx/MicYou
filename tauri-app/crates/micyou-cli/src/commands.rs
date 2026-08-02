@@ -226,3 +226,62 @@ pub fn cmd_config_path() {
     println!("settings: {}", config::settings_path().display());
     println!("lock: {}", lock::lock_path().display());
 }
+
+pub fn cmd_server_get() {
+    let prefs = tauri_app_lib::app_config::load_server_prefs();
+    println!("mode: {}", prefs.mode);
+    println!("port: {}", prefs.port);
+    println!("webPort: {}", prefs.web_port);
+    println!("bindAddress: {}", prefs.bind_address);
+    println!("autoBind: {}", prefs.auto_bind);
+    println!("outputDevice: {}", prefs.output_device);
+    println!("file: {}", tauri_app_lib::app_config::server_prefs_path().display());
+}
+
+pub fn cmd_server_set(key: &str, value: &str) -> Result<(), String> {
+    let mut prefs = tauri_app_lib::app_config::load_server_prefs();
+    match key {
+        "port" => {
+            let v: u16 = value
+                .parse()
+                .map_err(|_| format!("invalid port '{value}'"))?;
+            if v == 0 {
+                return Err("port must be > 0".to_string());
+            }
+            prefs.port = v;
+        }
+        "webPort" => {
+            let v: u16 = value
+                .parse()
+                .map_err(|_| format!("invalid webPort '{value}'"))?;
+            prefs.web_port = v;
+        }
+        "mode" => {
+            if !["wifi", "usb", "web"].contains(&value) {
+                return Err(format!(
+                    "invalid mode '{value}' (expected wifi, usb or web)"
+                ));
+            }
+            prefs.mode = value.to_string();
+        }
+        "bindAddress" => {
+            prefs.bind_address = value.to_string();
+        }
+        "autoBind" => match value {
+            "true" | "1" | "yes" | "on" => prefs.auto_bind = true,
+            "false" | "0" | "no" | "off" => prefs.auto_bind = false,
+            _ => return Err(format!("invalid boolean '{value}'")),
+        },
+        "outputDevice" => {
+            prefs.output_device = value.to_string();
+        }
+        _ => {
+            return Err(format!(
+                "unknown key '{key}' (expected port, webPort, mode, bindAddress, autoBind, outputDevice)"
+            ));
+        }
+    }
+    tauri_app_lib::app_config::save_server_prefs(&prefs)?;
+    println!("{key} = {value}");
+    Ok(())
+}
