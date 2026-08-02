@@ -1,6 +1,8 @@
 use crate::mode_lock::{self, RunMode};
+use crate::server::ServerState;
 use serde::Serialize;
 use std::process::Command;
+use tauri::{AppHandle, State};
 
 #[derive(Serialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -153,7 +155,10 @@ pub fn open_cli_terminal() -> Result<(), String> {
 /// Switch from the GUI to CLI mode: release the GUI lock and launch a terminal
 /// running `micyou serve`. The frontend should exit the app after this succeeds.
 #[tauri::command]
-pub async fn switch_to_cli() -> Result<(), String> {
+pub async fn switch_to_cli(
+    app: AppHandle,
+    state: State<'_, ServerState>,
+) -> Result<(), String> {
     // Make sure no other CLI instance is currently running
     if let Some(info) = mode_lock::read_lock() {
         if info.mode == RunMode::Cli && mode_lock::pid_alive_public(info.pid) {
@@ -163,6 +168,11 @@ pub async fn switch_to_cli() -> Result<(), String> {
             ));
         }
     }
+    // Stop the audio server BEFORE handing off to the CLI. Otherwise the CLI
+    // starts while the GUI's audio thread is still holding the output device
+    // and playing the incoming stream, and the brief overlap sounds like the
+    // microphone is being monitored / the audio routing is broken.
+    let _ = crate::commands::system::stop_server(app.clone(), state).await;
     mode_lock::release();
     open_cli_terminal()
 }
