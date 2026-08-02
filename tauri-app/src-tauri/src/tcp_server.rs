@@ -120,6 +120,13 @@ pub async fn start_tcp_server(
             accept_result = listener.accept() => {
                 match accept_result {
                     Ok((socket, addr)) => {
+                        // Control frames (ping/pong) are ~60 bytes; without
+                        // TCP_NODELAY, Nagle aggregation adds up to ~40ms of
+                        // jitter to the RTT reading. On USB mode the real
+                        // latency is a few ms, so this jitter is very visible.
+                        if let Err(e) = socket.set_nodelay(true) {
+                            log::warn!("Failed to set TCP_NODELAY on client socket: {}", e);
+                        }
                         let permit = match client_slots.clone().try_acquire_owned() {
                             Ok(permit) => permit,
                             Err(_) => {

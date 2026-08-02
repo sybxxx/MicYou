@@ -41,7 +41,16 @@ impl Default for NetworkStats {
 
 impl NetworkStats {
     pub fn set_rtt(&self, rtt: i64) {
-        self.rtt_ms.store(rtt, Ordering::Relaxed);
+        // EWMA smoothing: raw RTT is measured once per 500ms and a single
+        // sample can spike from phone-side scheduling; smooth it so the
+        // displayed latency stays stable (alpha 0.5).
+        let prev = self.rtt_ms.load(Ordering::Relaxed);
+        let smoothed = if prev > 0 {
+            (prev as f64 * 0.5 + rtt as f64 * 0.5).round() as i64
+        } else {
+            rtt
+        };
+        self.rtt_ms.store(smoothed, Ordering::Relaxed);
     }
     pub fn get_rtt(&self) -> i64 {
         self.rtt_ms.load(Ordering::Relaxed)
