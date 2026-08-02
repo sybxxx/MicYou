@@ -24,6 +24,7 @@ log = "0.4.32"
 cpal = "0.15.3"
 ratatui = "0.29.0"
 crossterm = "0.28.1"
+sysinfo = "0.39.6"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.169"

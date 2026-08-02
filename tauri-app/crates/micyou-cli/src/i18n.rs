@@ -64,12 +64,17 @@ struct Dict {
 
 const ZH: Dict = Dict {
     entries: &[
+        ("sys_cpu", "系统CPU"),
+        ("sys_mem", "内存"),
+        ("proc_cpu", "本进程CPU"),
+        ("proc_mem", "本进程内存"),
         ("app_title", "CLI 模式"),
         ("tab_dashboard", "仪表盘"),
         ("tab_audio", "音频参数"),
         ("tab_chain", "处理链路"),
         ("tab_logs", "日志"),
         ("state", "状态"),
+        ("server", "服务器"),
         ("server_running", "服务器: 运行中"),
         ("server_stopped", "服务器: 已停止"),
         ("listening", "监听"),
@@ -138,12 +143,17 @@ const ZH: Dict = Dict {
 
 const EN: Dict = Dict {
     entries: &[
+        ("sys_cpu", "CPU"),
+        ("sys_mem", "MEM"),
+        ("proc_cpu", "proc CPU"),
+        ("proc_mem", "proc MEM"),
         ("app_title", "CLI Mode"),
         ("tab_dashboard", "Dashboard"),
         ("tab_audio", "Audio"),
         ("tab_chain", "Chain"),
         ("tab_logs", "Logs"),
         ("state", "State"),
+        ("server", "Server"),
         ("server_running", "Server: running"),
         ("server_stopped", "Server: stopped"),
         ("listening", "Listening"),
@@ -212,12 +222,17 @@ const EN: Dict = Dict {
 
 const CAT: Dict = Dict {
     entries: &[
+        ("sys_cpu", "系统CPU"),
+        ("sys_mem", "内存"),
+        ("proc_cpu", "本进程CPU"),
+        ("proc_mem", "本进程内存"),
         ("app_title", "CLI 模式喵~"),
         ("tab_dashboard", "仪表盘喵~"),
         ("tab_audio", "音频参数喵~"),
         ("tab_chain", "处理链路喵~"),
         ("tab_logs", "日志喵~"),
         ("state", "状态喵~"),
+        ("server", "服务器喵~"),
         ("server_running", "服务器: 运行中喵~"),
         ("server_stopped", "服务器: 已停止喵~"),
         ("listening", "监听"),
@@ -286,12 +301,17 @@ const CAT: Dict = Dict {
 
 const LZH: Dict = Dict {
     entries: &[
+        ("sys_cpu", "系统CPU"),
+        ("sys_mem", "内存"),
+        ("proc_cpu", "本进程CPU"),
+        ("proc_mem", "本进程内存"),
         ("app_title", "CLI 模式"),
         ("tab_dashboard", "仪表盘"),
         ("tab_audio", "音频参数"),
         ("tab_chain", "处理链路"),
         ("tab_logs", "日志"),
         ("state", "状态"),
+        ("server", "服务器"),
         ("server_running", "服务器: 运行中"),
         ("server_stopped", "服务器: 已停止"),
         ("listening", "监听"),
@@ -360,12 +380,17 @@ const LZH: Dict = Dict {
 
 const ZH_HK: Dict = Dict {
     entries: &[
+        ("sys_cpu", "系統CPU"),
+        ("sys_mem", "記憶體"),
+        ("proc_cpu", "本程序CPU"),
+        ("proc_mem", "本程序記憶體"),
         ("app_title", "CLI 模式"),
         ("tab_dashboard", "儀錶盤"),
         ("tab_audio", "音訊參數"),
         ("tab_chain", "處理鏈路"),
         ("tab_logs", "日誌"),
         ("state", "狀態"),
+        ("server", "伺服器"),
         ("server_running", "伺服器: 運行中"),
         ("server_stopped", "伺服器: 已停止"),
         ("listening", "監聽"),
@@ -434,12 +459,17 @@ const ZH_HK: Dict = Dict {
 
 const ZH_SS: Dict = Dict {
     entries: &[
+        ("sys_cpu", "系统CPU"),
+        ("sys_mem", "内存"),
+        ("proc_cpu", "本进程CPU"),
+        ("proc_mem", "本进程内存"),
         ("app_title", "CLI 模式"),
         ("tab_dashboard", "仪表盘项"),
         ("tab_audio", "音频参数项"),
         ("tab_chain", "处理链路项"),
         ("tab_logs", "日志项"),
         ("state", "状态"),
+        ("server", "服务器"),
         ("server_running", "服务器: 运行中"),
         ("server_stopped", "服务器: 已停止"),
         ("listening", "监听"),
@@ -508,12 +538,17 @@ const ZH_SS: Dict = Dict {
 
 const ZH_TW: Dict = Dict {
     entries: &[
+        ("sys_cpu", "系統CPU"),
+        ("sys_mem", "記憶體"),
+        ("proc_cpu", "本程序CPU"),
+        ("proc_mem", "本程序記憶體"),
         ("app_title", "CLI 模式"),
         ("tab_dashboard", "儀表板"),
         ("tab_audio", "音訊參數"),
         ("tab_chain", "處理鏈路"),
         ("tab_logs", "日誌"),
         ("state", "狀態"),
+        ("server", "伺服器"),
         ("server_running", "伺服器: 執行中"),
         ("server_stopped", "伺服器: 已停止"),
         ("listening", "監聽"),
