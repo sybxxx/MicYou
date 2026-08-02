@@ -2,7 +2,70 @@ use tauri::window::Effect;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio_util::sync::CancellationToken;
 
-use crate::server::ServerState;
+use crate::audio_stream::{validate_audio_packet, AudioStreamEvent, ExpectedAudioSession};
+use crate::server::{await_startup_ready, ServerState, AUDIO_JOIN_TIMEOUT, STARTUP_TIMEOUT};
+
+const NETWORK_TASK_JOIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
+fn validate_server_port(port: u16, mode: &str) -> Result<Option<u16>, String> {
+    if mode == "web" {
+        return if port == 0 {
+            Err("Web server port must be between 1 and 65535".to_string())
+        } else {
+            Ok(None)
+        };
+    }
+
+    if port == 0 {
+        return Err("Audio server port must be between 1 and 65534".to_string());
+    }
+
+    port.checked_add(1).map(Some).ok_or_else(|| {
+        "Audio server port must be between 1 and 65534 so the following UDP port is valid"
+            .to_string()
+    })
+}
+
+async fn join_tasks_bounded(
+    mut tasks: Vec<tokio::task::JoinHandle<()>>,
+    timeout_duration: std::time::Duration,
+) {
+    let deadline = tokio::time::Instant::now() + timeout_duration;
+    while let Some(mut task) = tasks.pop() {
+        if tokio::time::timeout_at(deadline, &mut task).await.is_err() {
+            task.abort();
+            let _ = task.await;
+            for task in &tasks {
+                task.abort();
+            }
+            for task in tasks {
+                let _ = task.await;
+            }
+            break;
+        }
+    }
+}
+
+async fn rollback_start(
+    state: &ServerState,
+    cancel_token: &CancellationToken,
+    tasks: Vec<tokio::task::JoinHandle<()>>,
+) -> Result<(), String> {
+    cancel_token.cancel();
+    crate::tcp_server::cleanup_session_state(
+        &state.active_connection,
+        &state.active_audio_session,
+    )
+    .await;
+    join_tasks_bounded(tasks, NETWORK_TASK_JOIN_TIMEOUT).await;
+    state.cancel_token.lock().await.take();
+    if let Some(mdns) = state.mdns_manager.lock().await.take() {
+        mdns.stop_mdns();
+    }
+    let mut lifecycle = state.lifecycle.lock().await;
+    lifecycle.begin_stopping();
+    lifecycle.join_audio_bounded(AUDIO_JOIN_TIMEOUT).await
+}
 use crate::tray::{TrayContext, TrayMenuStrings, TrayState};
 use micyou_audio::dsp::DspProcessor;
 
@@ -21,6 +84,10 @@ pub async fn start_server(
     bind_address: Option<String>,
     output_device: Option<String>,
 ) -> Result<String, String> {
+    let udp_port = validate_server_port(port, &mode)?;
+
+    let _lifecycle_guard = state.lifecycle_gate.enter().await;
+    state.lifecycle.lock().await.begin_start().await?;
     let bind_addr = bind_address.unwrap_or_else(|| "0.0.0.0".to_string());
     let cancel_token = {
         let mut token_lock = state.cancel_token.lock().await;
@@ -65,7 +132,9 @@ pub async fn start_server(
     }
 
     let resolved_output_device = output_device;
-    let (audio_tx, mut audio_rx) = tokio::sync::mpsc::channel(1024);
+    // Bound queued latency: Android packets are ~7 ms, so 128 slots provide ample
+    // scheduling headroom without retaining seconds of stale audio.
+    let (audio_tx, mut audio_rx) = tokio::sync::mpsc::channel(128);
 
     // Start audio output pipeline (shared by all modes)
     let app_handle_audio = app_handle.clone();
@@ -73,8 +142,9 @@ pub async fn start_server(
     let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
 
     let is_monitoring_flag = state.is_monitoring.clone();
+    let spectrum_streaming_enabled = state.spectrum_streaming_enabled.clone();
 
-    std::thread::spawn(move || {
+    let audio_thread = std::thread::spawn(move || {
         let mut audio_manager = micyou_audio::AudioOutputManager::new();
         if let Err(e) = audio_manager.start(resolved_output_device) {
             let _ = ready_tx.send(Err(e.to_string()));
@@ -105,7 +175,7 @@ pub async fn start_server(
             DspProcessor::new(dsp_settings, resources_dir)
         };
         let mut jb = crate::jitter_buffer::JitterBuffer::new(12);
-        let mut frame_counter = 0;
+        let mut frame_counter: u32 = 0;
         let mut input_resampler: Option<micyou_audio::RubatoResampler> = None;
         let mut current_input_sample_rate: u32 = 0;
         let mut resample_out_buf = Vec::new();
@@ -120,9 +190,16 @@ pub async fn start_server(
             log::warn!("[Audio] Failed to start speaker loopback, AEC far-end will be unavailable");
         }
 
-        while let Some(packet) = audio_rx.blocking_recv() {
-            audio_manager.set_monitoring(is_monitoring_flag.load(std::sync::atomic::Ordering::Relaxed));
-            jb.push(packet);
+        while let Some(event) = audio_rx.blocking_recv() {
+            audio_manager
+                .set_monitoring(is_monitoring_flag.load(std::sync::atomic::Ordering::Relaxed));
+            match event {
+                AudioStreamEvent::SessionStarting { expected, epoch } => {
+                    jb.prepare_transport_session_epoch(expected, epoch);
+                    continue;
+                }
+                AudioStreamEvent::Packet { packet, epoch } => jb.push_epoch(packet, epoch),
+            }
             let packets: Vec<_> = std::iter::from_fn(|| jb.pop()).collect();
 
             for ordered_packet in packets {
@@ -234,19 +311,25 @@ pub async fn start_server(
 
                         audio_manager.push_audio_data(&pcm_f32, channels.max(1));
 
-                        frame_counter += 1;
-                        if frame_counter % 3 == 0 {
+                        frame_counter = frame_counter.wrapping_add(1);
+                        if frame_counter % 6 == 0 {
                             let level = (processed_rms * 500.0).min(100.0) as u32;
-                            let _ = app_handle_audio.emit("audio-level", level);
+                            if let Some(main_window) = app_handle_audio.get_webview_window("main") {
+                                let _ = main_window.emit("audio-level", level);
 
-                            let (raw_spec, proc_spec) = dsp_processor.get_spectrums();
-                            let _ = app_handle_audio.emit(
-                                "audio-spectrum",
-                                SpectrumPayload {
-                                    raw: raw_spec,
-                                    processed: proc_spec,
-                                },
-                            );
+                                if spectrum_streaming_enabled
+                                    .load(std::sync::atomic::Ordering::Acquire)
+                                {
+                                    let (raw_spec, proc_spec) = dsp_processor.get_spectrums();
+                                    let _ = main_window.emit(
+                                        "audio-spectrum",
+                                        SpectrumPayload {
+                                            raw: raw_spec,
+                                            processed: proc_spec,
+                                        },
+                                    );
+                                }
+                            }
                         }
                     }
                 }
@@ -257,10 +340,17 @@ pub async fn start_server(
         log::info!("[Audio] Speaker loopback stopped");
     });
 
-    ready_rx
+    state.lifecycle.lock().await.set_audio_thread(audio_thread);
+    let audio_ready = await_startup_ready(ready_rx, "Audio output", STARTUP_TIMEOUT)
         .await
-        .map_err(|_| "Audio thread panicked during startup".to_string())?
-        .map_err(|e| format!("Failed to start audio output: {}", e))?;
+        .map_err(|error| format!("Failed to start audio output: {}", error));
+    if let Err(error) = audio_ready {
+        let rollback = rollback_start(&state, &cancel_token, Vec::new()).await;
+        return Err(match rollback {
+            Ok(()) => error,
+            Err(cleanup) => format!("{}; {}", error, cleanup),
+        });
+    }
 
     // Web mode: start web server and return (skip TCP/UDP)
     #[cfg(feature = "web-server")]
@@ -269,12 +359,19 @@ pub async fn start_server(
         let web_server_instance = crate::web_server::WebServer::new();
 
         let (web_audio_tx, mut web_audio_rx) =
-            tokio::sync::mpsc::channel::<micyou_protocol::micyou::AudioPacketMessage>(1024);
+            tokio::sync::mpsc::channel::<(u64, micyou_protocol::micyou::AudioPacketMessage)>(128);
 
-        web_server_instance
+        if let Err(e) = web_server_instance
             .start(web_port, app_handle.clone(), web_audio_tx)
             .await
-            .map_err(|e| format!("Failed to start web server: {}", e))?;
+        {
+            let error = format!("Failed to start web server: {}", e);
+            let rollback = rollback_start(&state, &cancel_token, Vec::new()).await;
+            return Err(match rollback {
+                Ok(()) => error,
+                Err(cleanup) => format!("{}; {}", error, cleanup),
+            });
+        }
 
         let mut web_mdns_lock = state.web_mdns.lock().await;
         match crate::network::NetworkManager::start_web_mdns(web_port, &bind_addr) {
@@ -285,29 +382,66 @@ pub async fn start_server(
         *state.web_server.lock().await = Some(web_server_instance);
 
         let audio_tx_web = audio_tx;
-        tokio::spawn(async move {
+        let web_audio_task = tokio::spawn(async move {
             let mut seq: i32 = 0;
-            while let Some(packet) = web_audio_rx.recv().await {
+            let mut active_generation = 0;
+            while let Some((generation, packet)) = web_audio_rx.recv().await {
+                if generation < active_generation {
+                    continue;
+                }
+                if generation > active_generation {
+                    active_generation = generation;
+                    seq = 0;
+                    if audio_tx_web
+                        .send(AudioStreamEvent::SessionStarting {
+                            expected: ExpectedAudioSession::Bound(0),
+                            epoch: generation,
+                        })
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
                 let ordered = micyou_protocol::micyou::AudioPacketMessageOrdered {
                     sequence_number: seq,
                     audio_packet: Some(packet),
                     timestamp: 0,
                     fec_buffer: Vec::new(),
                     fec_sequence_number: -1,
+                    session_id: 0,
+                    fec_packet_lengths: Vec::new(),
                 };
                 seq += 1;
-                if audio_tx_web.send(ordered).await.is_err() {
+                if !validate_audio_packet(&ordered) {
+                    continue;
+                }
+                if audio_tx_web
+                    .send(AudioStreamEvent::Packet {
+                        packet: ordered,
+                        epoch: generation,
+                    })
+                    .await
+                    .is_err()
+                {
                     break;
                 }
             }
         });
+        state.background_tasks.lock().await.push(web_audio_task);
+        state.lifecycle.lock().await.mark_running();
 
         return Ok(format!("Web server started on port {}", web_port));
     }
 
     #[cfg(not(feature = "web-server"))]
     if mode == "web" {
-        return Err("Web server feature not enabled".to_string());
+        let error = "Web server feature not enabled".to_string();
+        let rollback = rollback_start(&state, &cancel_token, Vec::new()).await;
+        return Err(match rollback {
+            Ok(()) => error,
+            Err(cleanup) => format!("{}; {}", error, cleanup),
+        });
     }
 
     let app_handle_tcp = app_handle.clone();
@@ -317,9 +451,11 @@ pub async fn start_server(
     let stats_tcp = state.network_stats.clone();
     let mode_tcp = mode.clone();
     let bind_addr_tcp = bind_addr.clone();
-    let connection_tx_tcp = state.connection_tx.clone();
-    let active_socket_handle_tcp = state.active_socket_handle.clone();
-    tauri::async_runtime::spawn(async move {
+    let active_connection_tcp = state.active_connection.clone();
+    let takeover_lock_tcp = state.takeover_lock.clone();
+    let active_audio_session_tcp = state.active_audio_session.clone();
+    let (tcp_ready_tx, tcp_ready_rx) = tokio::sync::oneshot::channel();
+    let tcp_task = tokio::spawn(async move {
         if let Err(e) = crate::tcp_server::start_tcp_server(
             app_handle_tcp,
             port_tcp,
@@ -328,8 +464,10 @@ pub async fn start_server(
             audio_tx_tcp,
             stats_tcp,
             mode_tcp,
-            connection_tx_tcp,
-            active_socket_handle_tcp,
+            active_connection_tcp,
+            takeover_lock_tcp,
+            active_audio_session_tcp,
+            tcp_ready_tx,
         )
         .await
         {
@@ -338,16 +476,20 @@ pub async fn start_server(
     });
 
     let token_udp = cancel_token.clone();
-    let port_udp = port + 1;
+    let port_udp = udp_port.expect("non-web port validation must produce a UDP port");
     let stats_udp = state.network_stats.clone();
+    let active_audio_session_udp = state.active_audio_session.clone();
     let bind_addr_udp = bind_addr.clone();
-    tauri::async_runtime::spawn(async move {
+    let (udp_ready_tx, udp_ready_rx) = tokio::sync::oneshot::channel();
+    let udp_task = tokio::spawn(async move {
         if let Err(e) = crate::udp_server::start_udp_server(
             audio_tx,
             port_udp,
             bind_addr_udp,
             token_udp,
             stats_udp,
+            active_audio_session_udp,
+            udp_ready_tx,
         )
         .await
         {
@@ -355,28 +497,40 @@ pub async fn start_server(
         }
     });
 
+    let (tcp_ready, udp_ready) = tokio::join!(
+        await_startup_ready(tcp_ready_rx, "TCP server", STARTUP_TIMEOUT),
+        await_startup_ready(udp_ready_rx, "UDP server", STARTUP_TIMEOUT),
+    );
+    if let Err(error) = tcp_ready.and(udp_ready) {
+        let error = format!("Failed to start network server: {}", error);
+        let rollback = rollback_start(&state, &cancel_token, vec![tcp_task, udp_task]).await;
+        return Err(match rollback {
+            Ok(()) => error,
+            Err(cleanup) => format!("{}; {}", error, cleanup),
+        });
+    }
+    state
+        .background_tasks
+        .lock()
+        .await
+        .extend([tcp_task, udp_task]);
+    state.lifecycle.lock().await.mark_running();
+
     Ok(format!("Server started on port {}", port))
 }
 
 #[tauri::command]
 pub async fn stop_server(app: AppHandle, state: State<'_, ServerState>) -> Result<String, String> {
-    {
-        let mut handle_lock = state.active_socket_handle.lock().await;
-        if let Some(raw) = handle_lock.take() {
-            crate::tcp_server::force_close_socket(raw);
-        }
-    }
-
-    {
-        let mut conn_tx_lock = state.connection_tx.lock().await;
-        *conn_tx_lock = None;
-    }
+    let _lifecycle_guard = state.lifecycle_gate.enter().await;
+    state
+        .spectrum_streaming_enabled
+        .store(false, std::sync::atomic::Ordering::Release);
 
     #[cfg(feature = "web-server")]
     {
         let mut web_lock = state.web_server.lock().await;
         if let Some(web) = web_lock.take() {
-            web.stop();
+            web.stop().await;
         }
     }
     #[cfg(feature = "web-server")]
@@ -392,19 +546,39 @@ pub async fn stop_server(app: AppHandle, state: State<'_, ServerState>) -> Resul
         mdns.stop_mdns();
     }
 
-    let mut token_lock = state.cancel_token.lock().await;
-    if let Some(token) = token_lock.take() {
+    let token = state.cancel_token.lock().await.take();
+    let had_token = token.is_some();
+    if let Some(token) = token {
         token.cancel();
-        // Restore the original input device on macOS (BlackHole cleanup)
-        #[cfg(target_os = "macos")]
-        {
-            let _ = crate::blackhole::do_restore_input_device().await;
-        }
-        // Clean up PipeWire virtual devices on Linux
-        #[cfg(target_os = "linux")]
-        {
-            crate::pipewire::cleanup();
-        }
+    }
+    state.lifecycle.lock().await.begin_stopping();
+    let tasks = std::mem::take(&mut *state.background_tasks.lock().await);
+    crate::tcp_server::cleanup_session_state(
+        &state.active_connection,
+        &state.active_audio_session,
+    )
+    .await;
+    join_tasks_bounded(tasks, NETWORK_TASK_JOIN_TIMEOUT).await;
+    let audio_result = state
+        .lifecycle
+        .lock()
+        .await
+        .join_audio_bounded(AUDIO_JOIN_TIMEOUT)
+        .await;
+    // Restore the original input device on macOS (BlackHole cleanup)
+    #[cfg(target_os = "macos")]
+    {
+        let _ = crate::blackhole::do_restore_input_device().await;
+    }
+    // Clean up PipeWire virtual devices on Linux
+    #[cfg(target_os = "linux")]
+    {
+        crate::pipewire::cleanup();
+    }
+    if let Err(error) = audio_result {
+        return Err(error);
+    }
+    if had_token {
         let _ = app.emit("server-stopped", ());
         Ok("Server stopped".to_string())
     } else {
@@ -559,4 +733,29 @@ pub async fn exit_app(app: AppHandle, state: State<'_, ServerState>) -> Result<(
     log::info!(target: "tray", "exit_app: stopping application");
     app.exit(0);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_server_port;
+
+    #[test]
+    fn non_web_port_zero_is_rejected() {
+        assert!(validate_server_port(0, "wifi").is_err());
+    }
+
+    #[test]
+    fn non_web_port_65534_produces_last_udp_port() {
+        assert_eq!(validate_server_port(65534, "wifi"), Ok(Some(65535)));
+    }
+
+    #[test]
+    fn non_web_port_65535_is_rejected() {
+        assert!(validate_server_port(65535, "wifi").is_err());
+    }
+
+    #[test]
+    fn web_port_zero_is_rejected() {
+        assert!(validate_server_port(0, "web").is_err());
+    }
 }
