@@ -369,103 +369,131 @@ impl TuiApp {
         frame.render_widget(Paragraph::new(Line::from(spans)), area);
     }
 
+    /// Dashboard: two info cards, sparkline charts, spectrum and resource line.
+    /// Layout tiers adapt to terminal height so nothing overflows or clutters.
     fn render_dashboard(&mut self, frame: &mut Frame, area: Rect, state: &ServerState) {
         self.sample_system();
         let h = area.height;
-        // Responsive layout: shrink gracefully as the terminal gets shorter
-        let chunks = if h >= 26 {
-            Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Length(4),
-                    Constraint::Percentage(38),
-                    Constraint::Percentage(36),
-                    Constraint::Percentage(26),
-                ])
-                .split(area)
+        let (info_h, charts_h, spectrum_on, resource_on) = if h >= 26 {
+            (9u16, 8u16, true, true)
         } else if h >= 20 {
-            Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Length(3),
-                    Constraint::Percentage(45),
-                    Constraint::Percentage(55),
-                ])
-                .split(area)
+            (8, 6, true, false)
         } else if h >= 15 {
-            Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([Constraint::Length(3), Constraint::Percentage(52), Constraint::Percentage(48)])
-                .split(area)
+            (8, 5, false, false)
         } else {
-            Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([Constraint::Length(2), Constraint::Min(3)])
-                .split(area)
+            (7, 3, false, false)
         };
-        let compact = h < 26;
-        self.render_status_bar(frame, chunks[0], compact);
+        let mut constraints = vec![
+            Constraint::Length(info_h),
+            Constraint::Length(charts_h),
+        ];
+        if spectrum_on {
+            constraints.push(Constraint::Min(4));
+        }
+        if resource_on {
+            constraints.push(Constraint::Length(1));
+        }
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints(constraints)
+            .split(area);
+
+        let info_cols = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .split(chunks[0]);
+        self.render_connect_card(frame, info_cols[0]);
+        self.render_metric_card(frame, info_cols[1]);
+
         self.render_charts(frame, chunks[1]);
-        if chunks.len() > 2 {
+
+        if spectrum_on {
             self.render_spectrum(frame, chunks[2]);
         }
-        if chunks.len() > 3 {
-            self.render_metrics_row(frame, chunks[3]);
+        if resource_on {
+            self.render_resource_row(frame, chunks[3]);
         }
         let _ = state;
     }
 
-    /// Compact status bar: server state, mode/port, device, mute, web clients.
-    fn render_status_bar(&self, frame: &mut Frame, area: Rect, compact: bool) {
+    /// Left card: connection status, one datum per row (clean table look).
+    fn render_connect_card(&self, frame: &mut Frame, area: Rect) {
         let theme = self.theme;
-        let inner = area;
-        let dot = |on: bool| {
-            if on {
-                Span::styled("●", Style::default().fg(theme.primary.to_color()))
-            } else {
-                Span::styled("○", Style::default().fg(theme.error.to_color()))
-            }
+        let block = self.panel(self.t("conn_status"));
+        let mut rows: Vec<Line> = Vec::new();
+        let row = |label: &str, value: Vec<Span<'static>>| {
+            let mut spans = vec![
+                Span::styled(
+                    format!("  {label:<10}"),
+                    Style::default().fg(theme.secondary.to_color()),
+                ),
+                Span::raw(" "),
+            ];
+            spans.extend(value);
+            Line::from(spans)
         };
-        let label = |s: &str| Span::styled(format!("{s} "), Style::default().add_modifier(Modifier::DIM));
-        let val = |s: String, c: Color| Span::styled(s, Style::default().fg(c).add_modifier(Modifier::BOLD));
-
-        // Row 1: server / mode / port / device
-        let mut row1: Vec<Span> = vec![
-            dot(true),
-            label(self.t("server").as_str()),
-            val(self.t("server_running"), theme.primary.to_color()),
-            Span::raw("   "),
-            label(self.t("conn_mode").as_str()),
-            val(self.mode_label(), theme.tertiary.to_color()),
-            Span::raw("   "),
-            label(self.t("conn_port").as_str()),
-            val(self.port.to_string(), theme.tertiary.to_color()),
-        ];
+        rows.push(row(
+            self.t("state").as_str(),
+            vec![Span::styled(
+                self.t("server_running"),
+                Style::default()
+                    .fg(theme.primary.to_color())
+                    .add_modifier(Modifier::BOLD),
+            )],
+        ));
+        rows.push(row(
+            self.t("conn_mode").as_str(),
+            vec![Span::styled(
+                self.mode_label(),
+                Style::default()
+                    .fg(theme.tertiary.to_color())
+                    .add_modifier(Modifier::BOLD),
+            )],
+        ));
+        rows.push(row(
+            self.t("conn_port").as_str(),
+            vec![Span::styled(
+                self.port.to_string(),
+                Style::default()
+                    .fg(theme.tertiary.to_color())
+                    .add_modifier(Modifier::BOLD),
+            )],
+        ));
         match &self.device {
             Some(device) => {
-                row1.push(Span::raw("   "));
-                row1.push(dot(true));
-                row1.push(label(self.t("device").as_str()));
-                row1.push(val(device.name.clone(), theme.primary.to_color()));
-                row1.push(Span::styled(
-                    format!("  ({device_ip} · {lat}ms)", device_ip = device.ip, lat = device.latency),
-                    Style::default().fg(theme.secondary.to_color()),
+                rows.push(row(
+                    self.t("device").as_str(),
+                    vec![
+                        Span::styled("● ", Style::default().fg(theme.primary.to_color())),
+                        Span::styled(
+                            device.name.clone(),
+                            Style::default()
+                                .fg(theme.primary.to_color())
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                    ],
+                ));
+                rows.push(row(
+                    self.t("latency").as_str(),
+                    vec![Span::styled(
+                        format!("{} ms", device.latency),
+                        Style::default().fg(theme.tertiary.to_color()),
+                    )],
                 ));
             }
             None => {
-                row1.push(Span::raw("   "));
-                row1.push(dot(false));
-                row1.push(label(self.t("device").as_str()));
-                row1.push(val(
-                    self.t("device_not_connected"),
-                    theme.error.to_color(),
+                rows.push(row(
+                    self.t("device").as_str(),
+                    vec![Span::styled(
+                        clip_text(self.t("device_not_connected"), 24),
+                        Style::default().fg(theme.error.to_color()),
+                    )],
                 ));
             }
         }
-        // Row 2: mute badge / web clients / local IPs
-        let mute = if self.muted {
+        let mute_span = if self.muted {
             Span::styled(
-                format!(" {} ", self.t("muted")),
+                format!(" {}", self.t("enabled")),
                 Style::default()
                     .fg(Color::Black)
                     .bg(theme.error.to_color())
@@ -473,35 +501,102 @@ impl TuiApp {
             )
         } else {
             Span::styled(
-                format!(" {} ", self.t("muted")),
+                format!(" {}", self.t("disabled")),
                 Style::default()
                     .fg(theme.on_surface.to_color())
                     .bg(theme.surface_variant.to_color()),
             )
         };
-        let mut row2 = vec![
-            mute,
-            Span::raw("   "),
-            label(self.t("web_clients").as_str()),
-            val(self.web_clients.to_string(), theme.primary.to_color()),
-        ];
+        rows.push(row(self.t("muted").as_str(), vec![mute_span]));
+        rows.push(row(
+            self.t("web_clients").as_str(),
+            vec![Span::styled(
+                self.web_clients.to_string(),
+                Style::default().fg(theme.primary.to_color()),
+            )],
+        ));
         if !self.ips.is_empty() {
-            row2.push(Span::raw("   "));
-            row2.push(label(self.t("local_ips").as_str()));
-            row2.push(val(self.ips.join("  "), theme.tertiary.to_color()));
+            rows.push(row(
+                self.t("local_ips").as_str(),
+                vec![Span::styled(
+                    self.ips.first().cloned().unwrap_or_default(),
+                    Style::default().fg(theme.tertiary.to_color()),
+                )],
+            ));
         }
-        // Row 3/4: resource usage (system + this process)
-        let cpu_color = if self.cpu_usage > 80.0 {
-            theme.error.to_color()
-        } else {
-            theme.primary.to_color()
+        frame.render_widget(Paragraph::new(rows).block(block), area);
+    }
+
+    /// Right card: live audio metrics, one datum per row.
+    fn render_metric_card(&self, frame: &mut Frame, area: Rect) {
+        let theme = self.theme;
+        let block = self.panel(self.t("audio_metrics"));
+        let row = |label: &str, value: String, color: Color| {
+            Line::from(vec![
+                Span::styled(
+                    format!("  {label:<10}"),
+                    Style::default().fg(theme.secondary.to_color()),
+                ),
+                Span::raw(" "),
+                Span::styled(
+                    value,
+                    Style::default().fg(color).add_modifier(Modifier::BOLD),
+                ),
+            ])
         };
+        if let Some(m) = &self.metrics {
+            let lat_color = if m.latency_ms > 200 {
+                theme.error.to_color()
+            } else {
+                theme.primary.to_color()
+            };
+            let loss_color = if m.packet_loss_rate > 0.05 {
+                theme.error.to_color()
+            } else {
+                theme.tertiary.to_color()
+            };
+            let rows = vec![
+                row(self.t("bitrate").as_str(), format!("{} kbps", m.bitrate / 1000), theme.tertiary.to_color()),
+                row(self.t("sample_rate").as_str(), format!("{} Hz", m.sample_rate), theme.tertiary.to_color()),
+                row(self.t("latency").as_str(), format!("{} ms", m.latency_ms), lat_color),
+                row(self.t("network_latency").as_str(), format!("{} ms", m.network_latency_ms), theme.secondary.to_color()),
+                row(self.t("jitter").as_str(), format!("{:.1} ms", m.jitter_ms), theme.secondary.to_color()),
+                row(self.t("packet_loss").as_str(), format!("{:.1}%", m.packet_loss_rate * 100.0), loss_color),
+                row(self.t("buffer").as_str(), format!("{} ms", m.buffer_duration_ms), theme.secondary.to_color()),
+            ];
+            frame.render_widget(Paragraph::new(rows).block(block), area);
+        } else {
+            let hint = if self.ips.is_empty() {
+                self.t("server_addr_hint")
+            } else {
+                format!("{}:{}", self.ips.first().cloned().unwrap_or_default(), self.port)
+            };
+            frame.render_widget(
+                Paragraph::new(vec![
+                    Line::from(Span::styled(
+                        format!("  {}", self.t("server_addr_hint")),
+                        Style::default().fg(theme.secondary.to_color()),
+                    )),
+                    Line::from(""),
+                    Line::from(Span::styled(
+                        format!("  {hint}"),
+                        Style::default()
+                            .fg(theme.tertiary.to_color())
+                            .add_modifier(Modifier::BOLD),
+                    )),
+                ])
+                .block(block),
+                area,
+            );
+        }
+    }
+
+    /// Bottom thin line: system + process resource usage (no heavy panel).
+    fn render_resource_row(&self, frame: &mut Frame, area: Rect) {
+        let theme = self.theme;
+        let cpu_pct = self.cpu_usage as u32;
         let mem_pct = (self.mem_used as f64 / self.mem_total as f64 * 100.0) as u32;
-        let mem_color = if mem_pct > 90 {
-            theme.error.to_color()
-        } else {
-            theme.tertiary.to_color()
-        };
+        let mb = self.proc_mem as f64 / (1024.0 * 1024.0);
         let bar = |pct: u32, c: Color, width: usize| -> Span<'static> {
             let filled = (pct as usize * width / 100).min(width);
             let mut s = String::with_capacity(width);
@@ -512,57 +607,31 @@ impl TuiApp {
             s.push(']');
             Span::styled(s, Style::default().fg(c))
         };
-        let mb = self.proc_mem as f64 / (1024.0 * 1024.0);
-        let bw = inner.width as usize / 34; // bars shrink with terminal width
-        let bw = bw.clamp(6, 18);
-        let row3 = Line::from(vec![
+        let w = (area.width as usize / 40).clamp(5, 12);
+        let line = Line::from(vec![
             Span::styled(
-                format!(" {} ", self.t("sys_cpu")),
+                format!("  {} ", self.t("sys_cpu")),
                 Style::default().fg(theme.secondary.to_color()).add_modifier(Modifier::BOLD),
             ),
-            bar(self.cpu_usage as u32, cpu_color, bw),
-            Span::raw("  "),
+            bar(cpu_pct, if cpu_pct > 80 { theme.error.to_color() } else { theme.primary.to_color() }, w),
+            Span::raw(format!(" {cpu_pct}%   ")),
             Span::styled(
-                format!("{:.0}%", self.cpu_usage),
-                Style::default().fg(cpu_color).add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("   "),
-            Span::styled(
-                format!(" {} ", self.t("sys_mem")),
+                format!("{} ", self.t("sys_mem")),
                 Style::default().fg(theme.secondary.to_color()).add_modifier(Modifier::BOLD),
             ),
-            bar(mem_pct, mem_color, bw),
-            Span::raw("  "),
+            bar(mem_pct, if mem_pct > 90 { theme.error.to_color() } else { theme.tertiary.to_color() }, w),
+            Span::raw(format!(" {mem_pct}%   ")),
             Span::styled(
-                format!("{mem_pct}%"),
-                Style::default().fg(mem_color).add_modifier(Modifier::BOLD),
-            ),
-        ]);
-        let row4 = Line::from(vec![
-            Span::raw(" "),
-            Span::styled(
-                format!("{} {:.2}%  {} {:.0}MB", self.t("proc_cpu"), self.proc_cpu, self.t("proc_mem"), mb),
+                format!("{} {:.1}%  {} {:.0}MB", self.t("proc_cpu"), self.proc_cpu, self.t("proc_mem"), mb),
                 Style::default().fg(theme.secondary.to_color()),
             ),
         ]);
-
-        // Render rows on distinct lines (same-area Paragraphs would overwrite)
-        let row_count = if compact { 3 } else { 4 };
-        let rows = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints(
-                (0..row_count)
-                    .map(|_| Constraint::Length(1))
-                    .collect::<Vec<_>>(),
-            )
-            .split(inner);
-        frame.render_widget(Paragraph::new(Line::from(row1)), rows[0]);
-        frame.render_widget(Paragraph::new(Line::from(row2)), rows[1]);
-        frame.render_widget(Paragraph::new(Line::from(row3)), rows[2]);
-        if !compact && rows.len() > 3 {
-            frame.render_widget(Paragraph::new(Line::from(row4)), rows[3]);
-        }
+        frame.render_widget(Paragraph::new(line), area);
     }
+
+
+
+    /// Compact status bar: server state, mode/port, device, mute, web clients
 
     /// Two side-by-side sparkline panels: input level and network latency.
     fn render_charts(&self, frame: &mut Frame, area: Rect) {
@@ -631,87 +700,7 @@ impl TuiApp {
         frame.render_widget(Paragraph::new(line), parts[1]);
     }
 
-    /// Horizontal metrics row: key/value pairs across the full width.
-    fn render_metrics_row(&self, frame: &mut Frame, area: Rect) {
-        let theme = self.theme;
-        let block = self.panel(self.t("audio_metrics"));
-        if let Some(m) = &self.metrics {
-            let pair = |label: &str, value: String, color: Color| {
-                vec![
-                    Span::styled(
-                        format!("{label} "),
-                        Style::default().add_modifier(Modifier::DIM),
-                    ),
-                    Span::styled(
-                        value,
-                        Style::default().fg(color).add_modifier(Modifier::BOLD),
-                    ),
-                    Span::raw("   "),
-                ]
-            };
-            let lat_color = if m.latency_ms > 200 {
-                theme.error.to_color()
-            } else {
-                theme.primary.to_color()
-            };
-            let loss_color = if m.packet_loss_rate > 0.05 {
-                theme.error.to_color()
-            } else {
-                theme.tertiary.to_color()
-            };
-            let row1 = Line::from(
-                [
-                    pair(
-                        self.t("bitrate").as_str(),
-                        format!("{}k", m.bitrate / 1000),
-                        theme.tertiary.to_color(),
-                    ),
-                    pair(
-                        self.t("sample_rate").as_str(),
-                        format!("{}Hz", m.sample_rate),
-                        theme.tertiary.to_color(),
-                    ),
-                    pair(self.t("latency").as_str(), format!("{}ms", m.latency_ms), lat_color),
-                    pair(
-                        self.t("jitter").as_str(),
-                        format!("{:.1}ms", m.jitter_ms),
-                        theme.secondary.to_color(),
-                    ),
-                ]
-                .concat(),
-            );
-            let row2 = Line::from(
-                [
-                    pair(
-                        self.t("packet_loss").as_str(),
-                        format!("{:.1}%", m.packet_loss_rate * 100.0),
-                        loss_color,
-                    ),
-                    pair(
-                        self.t("buffer").as_str(),
-                        format!("{}ms", m.buffer_duration_ms),
-                        theme.secondary.to_color(),
-                    ),
-                    pair(
-                        self.t("network_latency").as_str(),
-                        format!("{}ms", m.network_latency_ms),
-                        theme.secondary.to_color(),
-                    ),
-                ]
-                .concat(),
-            );
-            frame.render_widget(Paragraph::new(vec![row1, row2]).block(block), area);
-        } else {
-            frame.render_widget(
-                Paragraph::new(Line::from(Span::styled(
-                    format!("  {}", self.t("server_addr_hint")),
-                    Style::default().fg(theme.secondary.to_color()),
-                )))
-                .block(block),
-                area,
-            );
-        }
-    }
+    /// Horizontal metrics row: key/value pairs across the full width
 
     /// Panel block with a colored title and soft border.
     fn panel(&self, title: String) -> Block<'static> {
@@ -906,7 +895,7 @@ impl TuiApp {
                 let (label, is_aec) = match stage.as_str() {
                     "AEC" => (format!("{} (AEC)", self.t("aec")), true),
                     "NoiseReduction" => (format!("{} (NR)", self.t("noise_reduction")), false),
-                    "Dereverb" => (format!("{}", self.t("dereverb")), false),
+                    "Dereverb" => (self.t("dereverb").to_string(), false),
                     "Equalizer" => ("Equalizer".to_string(), false),
                     "Amplifier" => (format!("{} (AMP)", self.t("gain")), false),
                     "AGC" => (format!("{} (AGC)", self.t("agc")), false),
@@ -1079,6 +1068,28 @@ fn latency_scale(hist: &VecDeque<u64>) -> (u64, u64) {
     (scale, peak)
 }
 
+/// Truncate text to a display width, appending an ellipsis when clipped.
+/// Approximates CJK as double-width.
+fn clip_text(s: String, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    let mut w = 0usize;
+    let mut out = String::new();
+    for ch in s.chars() {
+        let cw = if ch as u32 > 0x2fff { 2 } else { 1 };
+        if w + cw > width {
+            if w + 1 <= width {
+                out.push('…');
+            }
+            break;
+        }
+        out.push(ch);
+        w += cw;
+    }
+    out
+}
+
 /// Split a log line into its level tag (e.g. "[ok]") and the rest.
 fn log_level_split(line: &str) -> (Option<&str>, &str) {
     if line.starts_with('[') {
@@ -1195,7 +1206,7 @@ fn handle_mouse(app: &mut TuiApp, mouse: MouseEvent, area: Rect, state: &ServerS
             }
             // List pages: select the row under the cursor
             let body = chunks[2];
-            if row >= body.y + 1 && row < body.y + body.height - 1 {
+            if row > body.y && row < body.y + body.height - 1 {
                 let row_in = (row - body.y - 1) as usize;
                 match app.tab {
                     1 if row_in <= 6 => {
@@ -1386,12 +1397,12 @@ fn handle_key(app: &mut TuiApp, key: KeyEvent, state: &ServerState) -> bool {
             } else if app.tab == 3 {
                 match app.selected_conn {
                     1 => {
-                        app.prefs.port = app.prefs.port.saturating_add(10).min(65535);
+                        app.prefs.port = app.prefs.port.saturating_add(10);
                         app.port = app.prefs.port;
                         sync_server_prefs(app);
                     }
                     2 => {
-                        app.prefs.web_port = app.prefs.web_port.saturating_add(10).min(65535);
+                        app.prefs.web_port = app.prefs.web_port.saturating_add(10);
                         sync_server_prefs(app);
                     }
                     _ => {}

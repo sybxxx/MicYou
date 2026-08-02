@@ -64,6 +64,7 @@ struct Dict {
 
 const ZH: Dict = Dict {
     entries: &[
+        ("conn_status", "连接状态"),
         ("sys_cpu", "系统CPU"),
         ("sys_mem", "内存"),
         ("proc_cpu", "本进程CPU"),
@@ -143,6 +144,7 @@ const ZH: Dict = Dict {
 
 const EN: Dict = Dict {
     entries: &[
+        ("conn_status", "Connection"),
         ("sys_cpu", "CPU"),
         ("sys_mem", "MEM"),
         ("proc_cpu", "proc CPU"),
@@ -222,6 +224,7 @@ const EN: Dict = Dict {
 
 const CAT: Dict = Dict {
     entries: &[
+        ("conn_status", "连接状态喵~"),
         ("sys_cpu", "系统CPU"),
         ("sys_mem", "内存"),
         ("proc_cpu", "本进程CPU"),
@@ -301,6 +304,7 @@ const CAT: Dict = Dict {
 
 const LZH: Dict = Dict {
     entries: &[
+        ("conn_status", "连接状态"),
         ("sys_cpu", "系统CPU"),
         ("sys_mem", "内存"),
         ("proc_cpu", "本进程CPU"),
@@ -380,6 +384,7 @@ const LZH: Dict = Dict {
 
 const ZH_HK: Dict = Dict {
     entries: &[
+        ("conn_status", "連接狀態"),
         ("sys_cpu", "系統CPU"),
         ("sys_mem", "記憶體"),
         ("proc_cpu", "本程序CPU"),
@@ -459,6 +464,7 @@ const ZH_HK: Dict = Dict {
 
 const ZH_SS: Dict = Dict {
     entries: &[
+        ("conn_status", "连接状态"),
         ("sys_cpu", "系统CPU"),
         ("sys_mem", "内存"),
         ("proc_cpu", "本进程CPU"),
@@ -538,6 +544,7 @@ const ZH_SS: Dict = Dict {
 
 const ZH_TW: Dict = Dict {
     entries: &[
+        ("conn_status", "連接狀態"),
         ("sys_cpu", "系統CPU"),
         ("sys_mem", "記憶體"),
         ("proc_cpu", "本程序CPU"),
