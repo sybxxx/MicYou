@@ -399,15 +399,26 @@
                 <canvas ref="spectrumCanvas" class="w-full h-full"></canvas>
               </div>
             </div>
+            <!-- Amplifier (Gain) -->
+            <div class="bg-surface-bright rounded-2xl p-4 shadow-sm flex items-center gap-4">
+              <span class="text-sm font-medium text-on-surface whitespace-nowrap">{{ $t('settings.audioParams.gain') }}</span>
+              <MD3Slider :min="-50" :max="50" v-model="settings.gain" />
+              <span class="text-xs w-12 text-right">{{ settings.gain > 0 ? '+' : '' }}{{ settings.gain }} dB</span>
+            </div>
+
             <!-- Acoustic Echo Cancellation (AEC) -->
             <div class="bg-surface-bright rounded-2xl p-4 shadow-sm">
-              <div class="flex justify-between items-center cursor-pointer" @click="settings.aecEnabled = !settings.aecEnabled">
+              <div class="flex justify-between items-center" :class="isAecSupported ? 'cursor-pointer' : ''" @click="isAecSupported && (settings.aecEnabled = !settings.aecEnabled)">
                 <div>
                   <span class="font-medium text-on-surface">{{ $t('settings.audioParams.aec') }}</span>
                   <p class="text-xs text-on-surface-variant mt-0.5">{{ $t('settings.audioParams.aecDesc') }}</p>
+                  <p v-if="!isAecSupported" class="text-xs text-on-surface-variant mt-1 flex items-center gap-1">
+                    <Ban class="w-3 h-3 shrink-0" /> {{ $t('settings.audioParams.aecUnavailable') }}
+                  </p>
                 </div>
                 <button
-                  class="group relative inline-flex h-8 w-14 shrink-0 cursor-pointer items-center rounded-full border-2 transition-colors duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 active:scale-95"
+                  :disabled="!isAecSupported"
+                  class="group relative inline-flex h-8 w-14 shrink-0 cursor-pointer items-center rounded-full border-2 transition-colors duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"
                   :class="settings.aecEnabled ? 'border-primary bg-primary' : 'border-on-surface-variant bg-transparent hover:bg-on-surface-variant/10'"
                 >
                   <div class="relative flex items-center justify-center transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)]" :class="settings.aecEnabled ? 'translate-x-[26px]' : 'translate-x-[4px]'">
@@ -418,13 +429,6 @@
                   </div>
                 </button>
               </div>
-            </div>
-
-            <!-- Amplifier (Gain) -->
-            <div class="bg-surface-bright rounded-2xl p-4 shadow-sm flex items-center gap-4">
-              <span class="text-sm font-medium text-on-surface whitespace-nowrap">{{ $t('settings.audioParams.gain') }}</span>
-              <MD3Slider :min="-50" :max="50" v-model="settings.gain" />
-              <span class="text-xs w-12 text-right">{{ settings.gain > 0 ? '+' : '' }}{{ settings.gain }} dB</span>
             </div>
 
             <!-- Noise Suppression -->
@@ -558,9 +562,9 @@
               </div>
               
               <div class="flex items-center gap-2 overflow-hidden text-xs text-on-surface-variant font-medium opacity-80 pt-1">
-                <template v-for="(item, index) in settings.processingChain" :key="item">
+                <template v-for="(item, index) in displayChain" :key="item">
                   <span class="whitespace-nowrap">{{ $t(`settings.audioChain.${item}`) }}</span>
-                  <ArrowRight v-if="index < settings.processingChain.length - 1" class="w-3 h-3 shrink-0" />
+                  <ArrowRight v-if="index < displayChain.length - 1" class="w-3 h-3 shrink-0" />
                 </template>
               </div>
             </div>
@@ -707,6 +711,7 @@ import {
   ArrowRight,
   SlidersHorizontal,
   Palette,
+  Ban,
 } from '@lucide/vue';
 import ContributorsDialog from './ContributorsDialog.vue';
 import SponsorsDialog from './SponsorsDialog.vue';
@@ -818,6 +823,7 @@ const hasVBCable = computed(() => audioDevices.value.some(d => d.toLowerCase().i
 const hasBlackHole = computed(() => audioDevices.value.some(d => d.toLowerCase().includes('blackhole')));
 const isMacOS = typeof navigator !== 'undefined' && /Mac/.test(navigator.platform || navigator.userAgent) && !/iPhone|iPad|iPod/.test(navigator.userAgent);
 const isLinux = typeof navigator !== 'undefined' && /Linux/.test(navigator.platform || navigator.userAgent) && !/Android/.test(navigator.userAgent);
+const isAecSupported = !isMacOS && !isLinux;
 const pipewireStatus = ref<{ available: boolean; setup: boolean; device_exists: boolean }>({ available: false, setup: false, device_exists: false });
 const vbcableInstalling = ref(false);
 const vbcableInstallProgress = ref('');
@@ -947,6 +953,10 @@ const appVersion = ref('0.1.0');
 const updateProcessingChain = (newChain: string[]) => {
   settings.processingChain = newChain;
 };
+
+const displayChain = computed(() =>
+  isAecSupported ? settings.processingChain : settings.processingChain.filter((i) => i !== 'AEC')
+);
 
 const openDialog = async (name: string) => {
   if (name === 'Contributors') showContributors.value = true;
@@ -1089,6 +1099,13 @@ const loadSettings = () => {
       console.error("Failed to parse settings", e);
     }
   }
+
+  // AEC 仅在 Windows 可用；其他平台强制禁用并从链路中移除，可用平台强制置顶
+  const savedChain = settings.processingChain ?? [];
+  settings.processingChain = isAecSupported
+    ? ['AEC', ...savedChain.filter((i) => i !== 'AEC')]
+    : savedChain.filter((i) => i !== 'AEC');
+  if (!isAecSupported) settings.aecEnabled = false;
   
   // Legacy support
   const savedDevice = localStorage.getItem('micyou_output_device');
@@ -1106,7 +1123,7 @@ const syncSettingsToBackend = async () => {
     await invoke('update_audio_settings', {
       settings: {
         gain: settings.gain,
-        aecEnabled: settings.aecEnabled,
+        aecEnabled: isAecSupported ? settings.aecEnabled : false,
         nsEnabled: settings.nsEnabled,
         nsType: settings.nsType,
         nsIntensity: settings.nsIntensity,
@@ -1118,7 +1135,7 @@ const syncSettingsToBackend = async () => {
         agcDecay: settings.agcDecay,
         vadEnabled: settings.vadEnabled,
         vadThreshold: settings.vadThreshold,
-        processingChain: settings.processingChain,
+        processingChain: isAecSupported ? settings.processingChain : settings.processingChain.filter((i) => i !== 'AEC'),
         equalizer: settings.equalizer,
       }
     });

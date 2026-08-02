@@ -49,8 +49,15 @@ pub fn get_audio_devices() -> Vec<String> {
 #[tauri::command]
 pub fn update_audio_settings(
     state: State<'_, ServerState>,
-    settings: AudioDspSettings,
+    mut settings: AudioDspSettings,
 ) -> Result<String, String> {
+    // AEC must always run first in the processing chain
+    if let Some(pos) = settings.processing_chain.iter().position(|s| s == "AEC") {
+        if pos != 0 {
+            let stage = settings.processing_chain.remove(pos);
+            settings.processing_chain.insert(0, stage);
+        }
+    }
     match state.dsp_settings.write() {
         Ok(mut current) => {
             *current = settings;

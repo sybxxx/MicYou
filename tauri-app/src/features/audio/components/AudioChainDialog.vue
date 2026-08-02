@@ -26,10 +26,17 @@
                class="flex items-center bg-surface-container rounded-xl p-3 border-2 transition-all shadow-sm group select-none relative"
                :class="draggedIndex === index ? 'opacity-40 border-primary scale-[0.98] pointer-events-none' : 'border-transparent hover:border-primary/30'">
             
-            <div @pointerdown.prevent="onPointerDown(index)"
-                 class="w-8 h-8 -ml-2 mr-1 flex items-center justify-center cursor-grab active:cursor-grabbing hover:bg-surface-variant/50 rounded-lg group-hover:text-primary transition-colors opacity-50 group-hover:opacity-100 touch-none">
-              <GripVertical class="w-5 h-5 text-on-surface-variant" />
-            </div>
+            <template v-if="item !== 'AEC'">
+              <div @pointerdown.prevent="onPointerDown(index)"
+                   class="w-8 h-8 -ml-2 mr-1 flex items-center justify-center cursor-grab active:cursor-grabbing hover:bg-surface-variant/50 rounded-lg group-hover:text-primary transition-colors opacity-50 group-hover:opacity-100 touch-none">
+                <GripVertical class="w-5 h-5 text-on-surface-variant" />
+              </div>
+            </template>
+            <template v-else>
+              <div class="w-8 h-8 -ml-2 mr-1 flex items-center justify-center opacity-40" :title="$t('settings.audioChain.aecPinned')">
+                <Lock class="w-4 h-4 text-on-surface-variant" />
+              </div>
+            </template>
             
             <div class="w-6 h-6 rounded-full bg-surface flex items-center justify-center text-xs font-bold text-on-surface-variant mr-3 shadow-inner border border-surface-variant/30 group-hover:text-primary group-hover:border-primary/50 transition-colors pointer-events-none">
               {{ index + 1 }}
@@ -47,22 +54,36 @@
 <script setup lang="ts">
 import { ref, watch, onUnmounted } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
-import { X, GripVertical, RotateCcw } from '@lucide/vue';
+import { X, GripVertical, RotateCcw, Lock } from '@lucide/vue';
 
 const props = defineProps<{ isOpen: boolean, chain: string[] }>();
 const emit = defineEmits(['close', 'update:chain']);
+
+// AEC 仅在 Windows 可用；Linux/macOS 上隐藏该选项
+const isMacOS = typeof navigator !== 'undefined' && /Mac/.test(navigator.platform || navigator.userAgent) && !/iPhone|iPad|iPod/.test(navigator.userAgent);
+const isLinux = typeof navigator !== 'undefined' && /Linux/.test(navigator.platform || navigator.userAgent) && !/Android/.test(navigator.userAgent);
+const isAecSupported = !isMacOS && !isLinux;
+
+// 去重；支持平台强制 AEC 置顶，不支持平台彻底移除 AEC
+const normalizeChain = (chain: string[]) => {
+  const deduped = chain.filter((item, idx) => chain.indexOf(item) === idx);
+  if (!isAecSupported) return deduped.filter((i) => i !== 'AEC');
+  const rest = deduped.filter((i) => i !== 'AEC');
+  return ['AEC', ...rest];
+};
 
 const localChain = ref<string[]>([]);
 
 watch(() => props.isOpen, (newVal) => {
   if (newVal) {
-    localChain.value = [...props.chain];
+    localChain.value = normalizeChain(props.chain);
   }
 });
 
 const draggedIndex = ref<number>(-1);
 
 const onPointerDown = (index: number) => {
+  if (localChain.value[index] === 'AEC') return; // AEC 固定首位，不可拖动
   draggedIndex.value = index;
   
   if (typeof window !== 'undefined') {
@@ -84,6 +105,7 @@ const onPointerMove = (e: PointerEvent) => {
   if (row) {
     const hoverIndex = parseInt(row.getAttribute('data-index') || '-1', 10);
     if (hoverIndex !== -1 && hoverIndex !== draggedIndex.value) {
+      if (hoverIndex === 0 && localChain.value[0] === 'AEC') return; // 不允许排到 AEC 之前
       // Swap instantly
       const newChain = [...localChain.value];
       const draggedItem = newChain[draggedIndex.value];
@@ -120,7 +142,7 @@ const close = () => {
 
 const resetChain = () => {
   const defaultChain = ['AEC', 'NoiseReduction', 'Dereverb', 'Equalizer', 'Amplifier', 'AGC', 'VAD'];
-  localChain.value = [...defaultChain];
+  localChain.value = normalizeChain(defaultChain);
   emit('update:chain', localChain.value);
 };
 </script>
