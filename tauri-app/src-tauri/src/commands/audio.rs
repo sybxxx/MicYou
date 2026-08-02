@@ -70,6 +70,13 @@ pub fn update_audio_settings(
     }
 }
 
+/// Whether the shared server.json exists (used by the GUI to migrate
+/// pre-sync localStorage values on first run of a new version).
+#[tauri::command]
+pub fn server_prefs_exists() -> bool {
+    std::path::Path::new(&crate::app_config::server_prefs_path()).exists()
+}
+
 /// Current DSP settings.
 /// Prefers the shared settings.json so edits made by the CLI are reflected;
 /// falls back to the in-memory state when the file is unreadable.

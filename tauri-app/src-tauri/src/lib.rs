@@ -150,6 +150,7 @@ pub fn run() {
             commands::mode::save_ui_prefs,
             commands::mode::save_theme_colors,
             commands::get_audio_settings,
+            commands::server_prefs_exists,
             commands::get_server_prefs,
             commands::save_server_prefs,
         ])

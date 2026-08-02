@@ -391,6 +391,13 @@ export function useServer(options?: { audioLevel?: Ref<number>; isMuted?: Ref<bo
 
   async function loadServerPrefs() {
     try {
+      // First run of a synced version: migrate localStorage values
+      // (written by older builds) into the shared server.json.
+      const exists = await invoke<boolean>('server_prefs_exists');
+      if (!exists) {
+        persistServerPrefs();
+        return;
+      }
       const prefs = await invoke<ServerPrefsBackend>('get_server_prefs');
       if (!prefs) return;
       if (prefs.port) serverPort.value = prefs.port;
