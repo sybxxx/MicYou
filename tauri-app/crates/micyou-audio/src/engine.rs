@@ -7,7 +7,7 @@ use rubato::audioadapter::{Adapter, AdapterMut};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-const BUFFER_HEADROOM_MS: usize = 800;
+const BUFFER_HEADROOM_MS: usize = 300;
 const MS_PER_SECOND: usize = 1000;
 const MIN_BUFFER_SIZE: usize = 16384;
 
@@ -126,6 +126,7 @@ pub struct AudioOutputManager {
     resampler: Option<RubatoResampler>,
     device_sample_rate: u32,
     device_channels: usize,
+    buffer_headroom_ms: usize,
     channel_map_buffer: Vec<f32>,
     resample_buffer: Vec<f32>,
 
@@ -156,6 +157,7 @@ impl AudioOutputManager {
             resampler: None,
             device_sample_rate: 48000,
             device_channels: 2,
+            buffer_headroom_ms: BUFFER_HEADROOM_MS,
             channel_map_buffer: Vec::new(),
             resample_buffer: Vec::new(),
 
@@ -233,7 +235,7 @@ impl AudioOutputManager {
                 self.monitor_resampler = None;
             }
 
-            let buffer_size = (self.monitor_device_sample_rate as usize * self.monitor_device_channels * BUFFER_HEADROOM_MS) / MS_PER_SECOND;
+            let buffer_size = (self.monitor_device_sample_rate as usize * self.monitor_device_channels * self.buffer_headroom_ms) / MS_PER_SECOND;
             let ring_buffer = HeapRb::<f32>::new(buffer_size.max(MIN_BUFFER_SIZE));
             let (producer, mut consumer) = ring_buffer.split();
 
@@ -326,7 +328,11 @@ impl AudioOutputManager {
         }
     }
 
-    pub fn start(&mut self, target_device: Option<String>) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn start(
+        &mut self,
+        target_device: Option<String>,
+        buffer_headroom_ms: usize,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let host = cpal::default_host();
         
         let device = if let Some(target) = target_device.clone() {
@@ -395,8 +401,10 @@ impl AudioOutputManager {
             self.resampler = None;
         }
 
-        // Initialize a ring buffer for ~800ms of audio — generous headroom to prevent underruns
-        let buffer_size = (self.device_sample_rate as usize * self.device_channels * BUFFER_HEADROOM_MS) / MS_PER_SECOND;
+        // Initialize a ring buffer with configurable headroom — larger values
+        // tolerate jitter better but add latency, smaller values reduce latency
+        self.buffer_headroom_ms = buffer_headroom_ms.clamp(100, 1200);
+        let buffer_size = (self.device_sample_rate as usize * self.device_channels * self.buffer_headroom_ms) / MS_PER_SECOND;
         let ring_buffer = HeapRb::<f32>::new(buffer_size.max(MIN_BUFFER_SIZE));
         let (producer, mut consumer) = ring_buffer.split();
 

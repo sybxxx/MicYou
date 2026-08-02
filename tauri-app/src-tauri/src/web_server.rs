@@ -456,6 +456,12 @@ impl Listener for TlsListener {
     }
 }
 
+impl Default for WebServer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl WebServer {
     pub fn new() -> Self {
         Self {
@@ -502,9 +508,7 @@ impl WebServer {
         let cert = load_or_generate_cert_pem()?;
         let cert_chain: Vec<CertificateDer<'static>> =
             rustls_pemfile::certs(&mut BufReader::new(cert.cert_pem.as_bytes()))
-                .filter_map(|r| r.ok())
-                .map(CertificateDer::from)
-                .collect();
+                .filter_map(|r| r.ok()).collect();
 
         let private_key = rustls_pemfile::private_key(&mut BufReader::new(cert.key_pem.as_bytes()))
             .map_err(|e| format!("Failed to read private key: {}", e))?

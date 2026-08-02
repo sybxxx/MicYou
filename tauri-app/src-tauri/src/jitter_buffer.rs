@@ -416,7 +416,7 @@ impl JitterBuffer {
                 *dst ^= *src;
             }
             received += 1;
-            reference.get_or_insert_with(|| PlayedPacketReference {
+            reference.get_or_insert(PlayedPacketReference {
                 timestamp: packet.timestamp,
                 session_id: packet.session_id,
                 sample_rate: audio.sample_rate,

@@ -120,8 +120,7 @@ async fn download_installer(app: &tauri::AppHandle) -> Result<PathBuf, String> {
             .map_err(|e| format!("extract zip: {e}"))
     })
     .await
-    .map_err(|e| format!("spawn blocking: {e}"))?
-    .map_err(|e| e)?;
+    .map_err(|e| format!("spawn blocking: {e}"))??;
 
     // Clean up zip
     tokio::fs::remove_file(&zip_path).await.ok();

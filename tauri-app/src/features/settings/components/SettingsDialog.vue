@@ -568,6 +568,22 @@
                 </template>
               </div>
             </div>
+
+            <!-- Output Buffer Size -->
+            <div class="bg-surface-bright rounded-2xl p-4 shadow-sm">
+              <div class="flex items-center justify-between">
+                <div>
+                  <span class="font-medium text-on-surface">{{ $t('settings.audioParams.bufferSize') }}</span>
+                  <p class="text-xs text-on-surface-variant mt-0.5">{{ $t('settings.audioParams.bufferSizeDesc') }}</p>
+                </div>
+                <span class="text-xs w-14 text-right text-on-surface-variant font-medium whitespace-nowrap">{{ settings.outputBufferMs }} ms</span>
+              </div>
+              <div class="flex items-center gap-3">
+                <span class="text-[10px] text-on-surface-variant shrink-0">{{ $t('settings.audioParams.bufferLow') }}</span>
+                <MD3Slider :min="100" :max="1200" :step="100" v-model="settings.outputBufferMs" />
+                <span class="text-[10px] text-on-surface-variant shrink-0">{{ $t('settings.audioParams.bufferHigh') }}</span>
+              </div>
+            </div>
           </div>
 
           <!-- EQUALIZER SECTION -->
@@ -810,6 +826,7 @@ const settings = reactive({
   agcDecay: 50,
   vadEnabled: false,
   vadThreshold: -40,
+  outputBufferMs: 300,
   processingChain: ['AEC', 'NoiseReduction', 'Dereverb', 'Equalizer', 'Amplifier', 'AGC', 'VAD'],
   equalizer: {
     enabled: false,
@@ -1135,6 +1152,7 @@ const syncSettingsToBackend = async () => {
         agcDecay: settings.agcDecay,
         vadEnabled: settings.vadEnabled,
         vadThreshold: settings.vadThreshold,
+        outputBufferMs: settings.outputBufferMs,
         processingChain: isAecSupported ? settings.processingChain : settings.processingChain.filter((i) => i !== 'AEC'),
         equalizer: settings.equalizer,
       }

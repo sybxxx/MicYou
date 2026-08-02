@@ -284,9 +284,8 @@ where
     }
     let active = active.lock().await;
     if takeover_token.is_cancelled()
-        || !active
-            .as_ref()
-            .is_some_and(|connection| connection.connection_id == connection_id)
+        || active
+            .as_ref().is_none_or(|connection| connection.connection_id != connection_id)
     {
         return false;
     }
@@ -414,7 +413,7 @@ async fn handle_client(
             };
             epoch
         } else {
-            return Err(IoError::new(ErrorKind::Other, "audio session lock poisoned").into());
+            return Err(IoError::other("audio session lock poisoned").into());
         };
         session_start_permit.send(AudioStreamEvent::SessionStarting {
             expected: expected_session,

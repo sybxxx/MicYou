@@ -197,7 +197,7 @@ fn create_virtual_sink() -> bool {
     match Command::new("pw-cli")
         .args([
             "create-node", "adapter",
-            &format!("factory.name=support.null-audio-sink"),
+            "factory.name=support.null-audio-sink",
             &format!("node.name={}", SINK_NAME),
             "media.class=Audio/Sink",
             "object.linger=true",

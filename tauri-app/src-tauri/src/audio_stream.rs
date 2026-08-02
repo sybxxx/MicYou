@@ -38,7 +38,7 @@ pub fn validate_audio_packet(packet: &AudioPacketMessageOrdered) -> bool {
             && (packet.fec_packet_lengths.len() != FEC_GROUP_SIZE
                 || packet.fec_packet_lengths.iter().any(|&len| {
                     let len = len as usize;
-                    len == 0 || len > MAX_PCM_BLOCK_LEN || len % frame_size != 0
+                    len == 0 || len > MAX_PCM_BLOCK_LEN || !len.is_multiple_of(frame_size)
                 })))
     {
         return false;

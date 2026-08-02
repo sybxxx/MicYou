@@ -113,6 +113,10 @@ pub async fn start_server(
     }
 
     let dsp_settings = state.dsp_settings.clone();
+    let output_buffer_ms = dsp_settings
+        .read()
+        .map(|s| (s.output_buffer_ms as usize).clamp(100, 1200))
+        .unwrap_or(800);
 
     // On Linux, set up PipeWire virtual audio device before starting audio output.
     #[cfg(target_os = "linux")]
@@ -146,7 +150,7 @@ pub async fn start_server(
 
     let audio_thread = std::thread::spawn(move || {
         let mut audio_manager = micyou_audio::AudioOutputManager::new();
-        if let Err(e) = audio_manager.start(resolved_output_device) {
+        if let Err(e) = audio_manager.start(resolved_output_device, output_buffer_ms) {
             let _ = ready_tx.send(Err(e.to_string()));
             return;
         }
@@ -312,7 +316,7 @@ pub async fn start_server(
                         audio_manager.push_audio_data(&pcm_f32, channels.max(1));
 
                         frame_counter = frame_counter.wrapping_add(1);
-                        if frame_counter % 6 == 0 {
+                        if frame_counter.is_multiple_of(6) {
                             let level = (processed_rms * 500.0).min(100.0) as u32;
                             if let Some(main_window) = app_handle_audio.get_webview_window("main") {
                                 let _ = main_window.emit("audio-level", level);
@@ -575,9 +579,7 @@ pub async fn stop_server(app: AppHandle, state: State<'_, ServerState>) -> Resul
     {
         crate::pipewire::cleanup();
     }
-    if let Err(error) = audio_result {
-        return Err(error);
-    }
+    audio_result?;
     if had_token {
         let _ = app.emit("server-stopped", ());
         Ok("Server stopped".to_string())

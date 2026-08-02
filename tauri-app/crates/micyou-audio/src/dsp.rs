@@ -45,6 +45,10 @@ pub struct AudioDspSettings {
     pub vad_threshold: f32, // dB, -100..0
     pub aec_enabled: bool,
 
+    /// Output playback ring buffer headroom in milliseconds (100..1200).
+    #[serde(default = "default_output_buffer_ms")]
+    pub output_buffer_ms: u32,
+
     #[serde(default)]
     pub processing_chain: Vec<String>,
     #[serde(default)]
@@ -67,6 +71,7 @@ impl Default for AudioDspSettings {
             vad_enabled: false,
             vad_threshold: -40.0,
             aec_enabled: false,
+            output_buffer_ms: 300,
             processing_chain: vec![
                 "AEC".to_string(),
                 "NoiseReduction".to_string(),
@@ -79,6 +84,11 @@ impl Default for AudioDspSettings {
             equalizer: EqualizerConfig::default(),
         }
     }
+}
+
+/// Default output playback buffer headroom in milliseconds.
+fn default_output_buffer_ms() -> u32 {
+    300
 }
 
 // ─── Ulunas ONNX Processor ─────────────────────────────────────────────────

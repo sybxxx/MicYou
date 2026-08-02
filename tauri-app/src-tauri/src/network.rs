@@ -32,7 +32,7 @@ impl NetworkManager {
             MDNS_SERVICE_TYPE,
             &instance_name,
             &valid_host_name,
-            &local_ip.to_string(),
+            local_ip.to_string(),
             port,
             Some(properties)
         )?;
@@ -68,7 +68,7 @@ impl NetworkManager {
             micyou_protocol::MDNS_WEB_SERVICE_TYPE,
             &instance_name,
             &valid_host_name,
-            &local_ip.to_string(),
+            local_ip.to_string(),
             port,
             Some(properties),
         )?;
