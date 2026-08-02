@@ -243,6 +243,16 @@
       "logsBtn": "匯出紀錄",
       "introTitle": "軟體介紹",
       "introText": "MicYou 是一款開源的麥克風工具，可以將您的 Android 裝置變成電腦的高品質麥克風，支援 Wi-Fi 和 USB 連線，提供低延遲的音訊傳輸體驗。"
+    },
+    "runMode": {
+      "title": "執行模式",
+      "desc": "CLI 模式使用較少記憶體，在終端機中執行",
+      "switchButton": "切換到 CLI 模式",
+      "confirmSwitch": "切換到 CLI 模式？圖形介面將關閉，終端機會開啟並執行 micyou serve",
+      "switchFailed": "切換失敗",
+      "guiCurrent": "圖形介面 (GUI)",
+      "cliRunningShort": "CLI 執行中",
+      "cliRunning": "CLI 模式正在執行 (PID {pid})，請先在終端機中停止"
     }
   },
   "dialogs": {
@@ -288,7 +298,8 @@
     "hide": "隱藏應用程式",
     "start": "開始串流",
     "stop": "停止串流",
-    "exit": "退出"
+    "exit": "退出",
+    "switchCli": "切換到 CLI 模式"
   },
   "closeConfirm": {
     "title": "關閉 MicYou",

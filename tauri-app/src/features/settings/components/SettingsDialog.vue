@@ -33,6 +33,35 @@
           <Transition name="fade-slide" mode="out-in">
             <!-- GENERAL SECTION -->
             <div v-if="currentSection === 'general'" class="space-y-6" key="general">
+            <!-- Run Mode -->
+            <div class="bg-surface-bright/60 backdrop-blur-lg rounded-2xl p-4 shadow-sm border border-white/5">
+              <div class="flex items-center justify-between">
+                <div>
+                  <h4 class="font-bold text-on-surface">{{ $t('settings.runMode.title') }}</h4>
+                  <p class="text-xs text-on-surface-variant">{{ $t('settings.runMode.desc') }}</p>
+                </div>
+                <div class="flex items-center gap-2">
+                  <span
+                    class="px-3 py-1 rounded-full text-xs font-semibold"
+                    :class="modeStatus.mode === 'cli' && modeStatus.running
+                      ? 'bg-warning-container/40 text-warning'
+                      : 'bg-primary-container/40 text-primary'"
+                  >
+                    {{ modeLabel }}
+                  </span>
+                </div>
+              </div>
+              <p v-if="modeStatus.mode === 'cli' && modeStatus.running" class="mt-2 text-xs text-warning">
+                {{ $t('settings.runMode.cliRunning', { pid: modeStatus.pid }) }}
+              </p>
+              <button
+                @click="switchToCli"
+                class="mt-3 w-full rounded-xl bg-primary px-4 py-2.5 text-sm font-semibold text-on-primary hover:opacity-90 transition-opacity"
+              >
+                {{ $t('settings.runMode.switchButton') }}
+              </button>
+            </div>
+
             <div class="bg-surface-bright/60 backdrop-blur-lg rounded-2xl p-4 flex items-center justify-between shadow-sm border border-white/5">
               <div>
                 <h4 class="font-bold text-on-surface">{{ $t('settings.language.title') }}</h4>
@@ -778,6 +807,43 @@ const applyCustomColor = (color: { h: number, s: number, l: number }) => {
   themeColor.value = 'theme-custom';
 };
 
+// --- Run mode (GUI / CLI) ---
+interface ModeStatus {
+  mode: 'gui' | 'cli' | 'none';
+  pid: number | null;
+  running: boolean;
+}
+
+const modeStatus = ref<ModeStatus>({ mode: 'none', pid: null, running: false });
+
+const modeLabel = computed(() => {
+  if (modeStatus.value.mode === 'cli' && modeStatus.value.running) {
+    return t('settings.runMode.cliRunningShort');
+  }
+  return t('settings.runMode.guiCurrent');
+});
+
+async function refreshModeStatus() {
+  try {
+    modeStatus.value = await invoke<ModeStatus>('get_mode_status');
+  } catch (e) {
+    console.error('get_mode_status failed:', e);
+  }
+}
+
+async function switchToCli() {
+  const ok = confirm(t('settings.runMode.confirmSwitch'));
+  if (!ok) return;
+  try {
+    await invoke('switch_to_cli');
+    await invoke('exit_app');
+  } catch (e) {
+    console.error('switch_to_cli failed:', e);
+    alert(`${t('settings.runMode.switchFailed')}: ${e}`);
+    refreshModeStatus();
+  }
+}
+
 const sections = computed(() => [
   { id: 'general', name: t('settings.categories.general'), icon: SettingsIcon },
   { id: 'appearance', name: t('settings.categories.appearance'), icon: Palette },
@@ -1061,6 +1127,7 @@ let isMounted = false;
 onMounted(async () => {
   isMounted = true;
   handleOpenState(props.isOpen);
+  refreshModeStatus();
   try {
     appVersion.value = await invoke('get_app_version');
   } catch (e) {

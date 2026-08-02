@@ -10,6 +10,7 @@ export interface TrayMenuStrings {
   start: string;
   stop: string;
   exit: string;
+  switchCli: string;
 }
 
 export interface TrayState {
@@ -21,6 +22,7 @@ export interface TrayCallbacks {
   onShow: () => void | Promise<void>;
   onToggleStream: () => void | Promise<void>;
   onExit: () => void | Promise<void>;
+  onSwitchCli: () => void | Promise<void>;
 }
 
 export function trayStringsFromI18n(
@@ -33,6 +35,7 @@ export function trayStringsFromI18n(
     start: t("tray.start"),
     stop: t("tray.stop"),
     exit: t("tray.exit"),
+    switchCli: t("tray.switchCli"),
   };
 }
 
@@ -82,6 +85,9 @@ export function useTray(
           break;
         case "exit":
           void callbacks.onExit();
+          break;
+        case "switch_cli":
+          void callbacks.onSwitchCli();
           break;
         default:
           console.warn("Unknown tray-action id:", id);

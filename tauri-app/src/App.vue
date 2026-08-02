@@ -136,6 +136,17 @@ useTray(
     },
     onToggleStream: () => toggleStreaming(),
     onExit: () => win.exitApp(),
+    onSwitchCli: async () => {
+      const confirmSwitch = confirm('切换到 CLI 模式？此操作将关闭图形界面并打开终端运行 CLI');
+      if (!confirmSwitch) return;
+      try {
+        await invoke('switch_to_cli');
+        await win.exitApp();
+      } catch (e) {
+        console.error('switch_to_cli failed:', e);
+        alert(`切换失败: ${e}`);
+      }
+    },
   },
   visibilityRef,
   streamingRef,

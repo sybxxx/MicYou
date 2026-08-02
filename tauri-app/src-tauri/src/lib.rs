@@ -6,6 +6,7 @@ pub mod blackhole;
 pub mod commands;
 pub mod events;
 pub mod jitter_buffer;
+pub mod mode_lock;
 pub mod network;
 #[cfg(target_os = "linux")]
 pub mod pipewire;
@@ -99,6 +100,14 @@ pub fn run() {
                 log::warn!(target: "tray", "failed to build tray: {e}");
             }
 
+            // Acquire the GUI mode lock so the CLI knows the GUI is running.
+            // A live CLI lock does not block the GUI; the frontend reads
+            // `get_mode_status` to show the "CLI mode running" notice.
+            match crate::mode_lock::acquire(crate::mode_lock::RunMode::Gui) {
+                Ok(()) => log::info!(target: "mode", "GUI mode lock acquired"),
+                Err(e) => log::warn!(target: "mode", "GUI mode lock not acquired: {e}"),
+            }
+
             // Apply native macOS frosted glass vibrancy
             if let Some(win) = app.get_webview_window("main") {
                 apply_macos_vibrancy(&win);
@@ -135,6 +144,9 @@ pub fn run() {
             commands::set_blackhole_as_input,
             commands::restore_input_device,
             commands::check_pipewire,
+            commands::mode::get_mode_status,
+            commands::mode::release_gui_lock,
+            commands::mode::switch_to_cli,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

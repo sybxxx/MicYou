@@ -1,0 +1,168 @@
+use crate::mode_lock::{self, RunMode};
+use serde::Serialize;
+use std::process::Command;
+
+#[derive(Serialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ModeStatus {
+    /// Lock state on disk: "gui" | "cli" | "none"
+    pub mode: String,
+    pub pid: Option<u32>,
+    /// Whether a live process owns the lock
+    pub running: bool,
+}
+
+/// Resolve the `micyou` CLI binary path:
+/// 1. sibling of the current exe (dev builds share target/debug)
+/// 2. parent of the current exe dir (release layouts)
+/// 3. PATH
+pub fn find_cli_binary() -> Option<std::path::PathBuf> {
+    let exe_name = if cfg!(target_os = "windows") {
+        "micyou.exe"
+    } else {
+        "micyou"
+    };
+
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let candidate = dir.join(exe_name);
+            if candidate.exists() {
+                return Some(candidate);
+            }
+            if let Some(grandparent) = dir.parent() {
+                let candidate = grandparent.join(exe_name);
+                if candidate.exists() {
+                    return Some(candidate);
+                }
+            }
+        }
+    }
+
+    // Fall back to PATH lookup
+    if let Ok(output) = Command::new(exe_name).arg("--version").output() {
+        if output.status.success() {
+            return Some(std::path::PathBuf::from(exe_name));
+        }
+    }
+    None
+}
+
+/// Current lock status for the frontend.
+#[tauri::command]
+pub fn get_mode_status() -> ModeStatus {
+    match mode_lock::read_lock() {
+        Some(lock_info) => {
+            let running = mode_lock::pid_alive_public(lock_info.pid);
+            let mode = match lock_info.mode {
+                RunMode::Gui => "gui",
+                RunMode::Cli => "cli",
+            };
+            ModeStatus {
+                mode: mode.to_string(),
+                pid: Some(lock_info.pid),
+                running,
+            }
+        }
+        None => ModeStatus {
+            mode: "none".to_string(),
+            pid: None,
+            running: false,
+        },
+    }
+}
+
+/// Release the GUI lock (called by the frontend right before switching to CLI).
+#[tauri::command]
+pub fn release_gui_lock() -> Result<(), String> {
+    if let Some(info) = mode_lock::read_lock() {
+        if info.mode == RunMode::Gui && info.pid == std::process::id() {
+            mode_lock::release();
+        }
+    }
+    Ok(())
+}
+
+/// Open a terminal window running the CLI server. Platform-specific:
+/// - Linux: probe kitty / alacritty / gnome-terminal / konsole / xterm
+/// - macOS: Terminal.app via osascript (iTerm2 fallback)
+/// - Windows: cmd start (Windows Terminal preferred)
+pub fn open_cli_terminal() -> Result<(), String> {
+    let binary = find_cli_binary().ok_or_else(|| {
+        "micyou CLI binary not found - install it or add it to PATH".to_string()
+    })?;
+
+    #[cfg(target_os = "linux")]
+    {
+        let candidates: &[(&str, &[&str])] = &[
+            ("kitty", &["--", binary.to_str().unwrap_or("micyou"), "serve"]),
+            (
+                "alacritty",
+                &["-e", binary.to_str().unwrap_or("micyou"), "serve"],
+            ),
+            (
+                "gnome-terminal",
+                &["--", binary.to_str().unwrap_or("micyou"), "serve"],
+            ),
+            (
+                "konsole",
+                &["-e", binary.to_str().unwrap_or("micyou"), "serve"],
+            ),
+            ("xterm", &["-e", binary.to_str().unwrap_or("micyou"), "serve"]),
+        ];
+        for (term, args) in candidates {
+            if Command::new(term).args(*args).spawn().is_ok() {
+                return Ok(());
+            }
+        }
+        Err("no supported terminal emulator found (kitty/alacritty/gnome-terminal/konsole/xterm)".into())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let script = format!(
+            "tell application \"Terminal\" to do script \"{} serve\"",
+            binary.to_string_lossy()
+        );
+        let status = Command::new("osascript")
+            .args(["-e", &script])
+            .spawn()
+            .map_err(|e| e.to_string())?;
+        let _ = status;
+        Ok(())
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let bin = binary.to_string_lossy().to_string();
+        // Prefer Windows Terminal if available, otherwise plain cmd start
+        Command::new("cmd")
+            .args(["/c", "start", "", "wt", "-d", ".", "cmd", "/k", &bin, "serve"])
+            .spawn()
+            .or_else(|_| {
+                Command::new("cmd")
+                    .args(["/c", "start", "", &bin, "serve"])
+                    .spawn()
+            })
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    {
+        Err("unsupported platform".into())
+    }
+}
+
+/// Switch from the GUI to CLI mode: release the GUI lock and launch a terminal
+/// running `micyou serve`. The frontend should exit the app after this succeeds.
+#[tauri::command]
+pub async fn switch_to_cli() -> Result<(), String> {
+    // Make sure no other CLI instance is currently running
+    if let Some(info) = mode_lock::read_lock() {
+        if info.mode == RunMode::Cli && mode_lock::pid_alive_public(info.pid) {
+            return Err(format!(
+                "CLI mode is already running (pid {}) - stop it first",
+                info.pid
+            ));
+        }
+    }
+    mode_lock::release();
+    open_cli_terminal()
+}

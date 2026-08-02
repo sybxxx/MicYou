@@ -243,6 +243,16 @@
       "logsBtn": "匯出日誌",
       "introTitle": "軟件介紹",
       "introText": "MicYou 係一個開源嘅咪高峰工具，可以將你嘅 Android 裝置變做電腦嘅高質素咪高峰，支援 Wi-Fi (TCP) 同 USB 連線，畀到低延遲嘅音訊傳輸體驗。"
+    },
+    "runMode": {
+      "title": "運行模式",
+      "desc": "CLI 模式用少啲記憶體，喺終端機入面運行",
+      "switchButton": "切換到 CLI 模式",
+      "confirmSwitch": "要切換到 CLI 模式？圖形介面會關閉，終端機會打開運行 micyou serve",
+      "switchFailed": "切換失敗",
+      "guiCurrent": "圖形介面 (GUI)",
+      "cliRunningShort": "CLI 運行中",
+      "cliRunning": "CLI 模式正在運行 (PID {pid})，請喺終端機入面停止佢先"
     }
   },
   "dialogs": {
@@ -288,7 +298,8 @@
     "hide": "隱藏應用程式",
     "start": "開始串流",
     "stop": "停止串流",
-    "exit": "離開"
+    "exit": "離開",
+    "switchCli": "切換到 CLI 模式"
   },
   "closeConfirm": {
     "title": "確認離開",

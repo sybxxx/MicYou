@@ -14,6 +14,8 @@ pub struct TrayMenuStrings {
     pub start: String,
     pub stop: String,
     pub exit: String,
+    #[serde(default)]
+    pub switch_cli: String,
 }
 
 impl TrayMenuStrings {
@@ -25,6 +27,7 @@ impl TrayMenuStrings {
             start: "Start Streaming".to_string(),
             stop: "Stop Streaming".to_string(),
             exit: "Exit".to_string(),
+            switch_cli: "Switch to CLI Mode".to_string(),
         }
     }
 }
@@ -58,6 +61,7 @@ pub fn stream_toggle_label(state: TrayState, strings: &TrayMenuStrings) -> &str 
 pub const MENU_ID_SHOW: &str = "show";
 pub const MENU_ID_TOGGLE_STREAM: &str = "toggle_stream";
 pub const MENU_ID_EXIT: &str = "exit";
+pub const MENU_ID_SWITCH_CLI: &str = "switch_cli";
 
 pub struct TrayContext {
     pub strings: Mutex<TrayMenuStrings>,
@@ -96,7 +100,7 @@ pub fn build_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
             let id = event.id().as_ref();
             log::info!(target: "tray", "menu event: {id}");
             match id {
-                MENU_ID_SHOW | MENU_ID_TOGGLE_STREAM | MENU_ID_EXIT => {
+                MENU_ID_SHOW | MENU_ID_TOGGLE_STREAM | MENU_ID_EXIT | MENU_ID_SWITCH_CLI => {
                     let _ = app.emit("tray-action", id);
                 }
                 other => {
@@ -155,9 +159,19 @@ fn build_menu<R: Runtime>(
         true,
         None::<&str>,
     )?;
+    let switch_cli = MenuItem::with_id(
+        app,
+        MENU_ID_SWITCH_CLI,
+        &strings.switch_cli,
+        true,
+        None::<&str>,
+    )?;
     let exit = MenuItem::with_id(app, MENU_ID_EXIT, &strings.exit, true, None::<&str>)?;
     let separator = PredefinedMenuItem::separator(app)?;
-    Menu::with_items(app, &[&show_hide, &toggle_stream, &separator, &exit])
+    Menu::with_items(
+        app,
+        &[&show_hide, &toggle_stream, &separator, &switch_cli, &separator, &exit],
+    )
 }
 
 #[cfg(test)]
@@ -172,6 +186,7 @@ mod tests {
             start: "Start".into(),
             stop: "Stop".into(),
             exit: "Exit".into(),
+            switch_cli: "Switch".into(),
         }
     }
 
@@ -238,5 +253,6 @@ mod tests {
         assert!(!d.show.is_empty() && !d.hide.is_empty());
         assert!(!d.start.is_empty() && !d.stop.is_empty());
         assert!(!d.exit.is_empty());
+        assert!(!d.switch_cli.is_empty());
     }
 }

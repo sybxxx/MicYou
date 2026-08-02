@@ -243,6 +243,16 @@
       "logsBtn": "出日志",
       "introTitle": "简介",
       "introText": "MicYou 者，开源麦克风之具也。可使安卓装置变为电脑之高品质麦克风，以 Wi-Fi 或 USB 相连，音频传输延迟极低。"
+    },
+    "runMode": {
+      "title": "运行模式",
+      "desc": "CLI 模式耗内存寡，运行于终端",
+      "switchButton": "切至 CLI 模式",
+      "confirmSwitch": "欲切至 CLI 模式乎？图形界面将闭，终端将启 micyou serve",
+      "switchFailed": "切换败",
+      "guiCurrent": "图形界面 (GUI)",
+      "cliRunningShort": "CLI 运行中",
+      "cliRunning": "CLI 模式运行中 (PID {pid})，先于终端止之"
     }
   },
   "dialogs": {
@@ -288,7 +298,8 @@
     "hide": "隐应用",
     "start": "启传输",
     "stop": "止传输",
-    "exit": "出"
+    "exit": "出",
+    "switchCli": "切至 CLI 模式"
   },
   "closeConfirm": {
     "title": "关闭确认",

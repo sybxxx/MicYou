@@ -177,15 +177,15 @@
       "processed": "Processed"
     },
     "audioParams": {
-    "gain": "Gain",
-    "aec": "Acoustic Echo Cancellation (AEC)",
-    "aecDesc": "Cancel speaker echo from microphone using AI",
-    "aecUnavailable": "Not available on this system",
-    "bufferSize": "Output Buffer Size",
-    "bufferSizeDesc": "Larger buffer resists network jitter but adds latency",
-    "bufferLow": "Low latency",
-    "bufferHigh": "High stability",
-    "noiseSuppression": "Noise Suppression",
+      "gain": "Gain",
+      "aec": "Acoustic Echo Cancellation (AEC)",
+      "aecDesc": "Cancel speaker echo from microphone using AI",
+      "aecUnavailable": "Not available on this system",
+      "bufferSize": "Output Buffer Size",
+      "bufferSizeDesc": "Larger buffer resists network jitter but adds latency",
+      "bufferLow": "Low latency",
+      "bufferHigh": "High stability",
+      "noiseSuppression": "Noise Suppression",
       "intensity": "Intensity",
       "dereverb": "Dereverb",
       "level": "Level",
@@ -245,6 +245,16 @@
       "logsBtn": "Export Logs",
       "introTitle": "Introduction",
       "introText": "MicYou is an open source microphone tool that turns your Android device into a high-quality microphone for your computer. It supports Wi-Fi and USB connections, providing low-latency audio transmission."
+    },
+    "runMode": {
+      "title": "Run Mode",
+      "desc": "CLI mode uses less memory and runs in a terminal",
+      "switchButton": "Switch to CLI Mode",
+      "confirmSwitch": "Switch to CLI mode? The GUI will close and a terminal will run micyou serve",
+      "switchFailed": "Switch failed",
+      "guiCurrent": "GUI",
+      "cliRunningShort": "CLI running",
+      "cliRunning": "CLI mode is running (PID {pid}) - stop it in the terminal before switching"
     }
   },
   "dialogs": {
@@ -290,7 +300,8 @@
     "hide": "Hide App",
     "start": "Start Streaming",
     "stop": "Stop Streaming",
-    "exit": "Exit"
+    "exit": "Exit",
+    "switchCli": "Switch to CLI Mode"
   },
   "closeConfirm": {
     "title": "Close MicYou",

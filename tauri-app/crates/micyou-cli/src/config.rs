@@ -48,8 +48,3 @@ pub fn save_settings(settings: &AudioDspSettings) -> Result<(), String> {
     fs::write(settings_path(), raw).map_err(|e| format!("cannot write settings: {e}"))
 }
 
-pub fn settings_json() -> Result<serde_json::Value, String> {
-    let path = settings_path();
-    let raw = fs::read_to_string(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
-    serde_json::from_str(&raw).map_err(|e| format!("cannot parse {}: {e}", path.display()))
-}

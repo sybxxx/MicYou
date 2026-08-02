@@ -44,6 +44,11 @@ pub fn lock_path() -> PathBuf {
     data_dir().join("mode.lock")
 }
 
+/// Public wrapper so the GUI/CLI commands can check liveness.
+pub fn pid_alive_public(pid: u32) -> bool {
+    pid_alive(pid)
+}
+
 /// Returns true when a process with `pid` is alive on this system.
 fn pid_alive(pid: u32) -> bool {
     if pid == 0 {

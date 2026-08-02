@@ -750,6 +750,7 @@ pub fn hide_main_window(app: AppHandle) -> Result<(), String> {
 pub async fn exit_app(app: AppHandle, state: State<'_, ServerState>) -> Result<(), String> {
     let _ = stop_server(app.clone(), state).await;
     log::info!(target: "tray", "exit_app: stopping application");
+    crate::mode_lock::release();
     app.exit(0);
     Ok(())
 }

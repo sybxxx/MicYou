@@ -243,6 +243,16 @@
       "logsBtn": "出口日志记录项目",
       "introTitle": "软件介绍项",
       "introText": "麦克风你是一个打开来源微型手机工具那转弯你的安卓设备进入一个高质量微型手机为了你的计算机。 基于在安卓麦克风， 它支持 无线保真度 (传输控制协定)， 蓝色牙齿， 和 通用串行总线式 联系, 提供低延迟声音的传播。"
+    },
+    "runMode": {
+      "title": "运行模式项",
+      "desc": "CLI 模式使用更少内存项，通过终端运行",
+      "switchButton": "切换到 CLI 模式项",
+      "confirmSwitch": "切换到 CLI 模式？图形界面将关闭项，终端将打开运行 micyou serve",
+      "switchFailed": "切换失败项",
+      "guiCurrent": "图形界面 (GUI) 项",
+      "cliRunningShort": "CLI 运行中项",
+      "cliRunning": "CLI 模式正在运行项 (PID {pid})，请在终端中停止后再切换"
     }
   },
   "dialogs": {
@@ -288,7 +298,8 @@
     "hide": "隐藏应用程序项",
     "start": "开始推流",
     "stop": "停止推流",
-    "exit": "出口程序项"
+    "exit": "出口程序项",
+    "switchCli": "切换到 CLI 模式项"
   },
   "closeConfirm": {
     "title": "关闭确认标题项",

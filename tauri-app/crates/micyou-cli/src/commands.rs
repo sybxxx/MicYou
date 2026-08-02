@@ -1,7 +1,6 @@
 use crate::config;
-use crate::lock;
+use tauri_app_lib::mode_lock as lock;
 use micyou_audio::dsp::AudioDspSettings;
-use std::process::exit;
 
 pub fn cmd_devices() {
     let devices = tauri_app_lib::commands::audio::get_audio_devices();

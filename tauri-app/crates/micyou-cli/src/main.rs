@@ -1,8 +1,8 @@
 mod commands;
 mod config;
 mod events;
-mod lock;
 mod serve;
+mod tui;
 
 use clap::{Parser, Subcommand};
 
@@ -21,7 +21,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// 启动音频服务（默认纯日志输出，--tui 进入交互仪表盘）
+    /// 启动音频服务（默认 TUI 仪表盘，--no-tui 纯日志）
     Serve {
         /// 音频服务器端口（UDP 端口自动 +1）
         #[arg(long, default_value_t = 4750)]
@@ -35,9 +35,9 @@ enum Commands {
         /// 绑定地址
         #[arg(long)]
         bind: Option<String>,
-        /// 交互式 TUI 仪表盘
+        /// 纯日志模式（无 TUI），适合 systemd / 脚本
         #[arg(long)]
-        tui: bool,
+        no_tui: bool,
     },
     /// 显示当前服务状态
     Status,
@@ -105,18 +105,15 @@ async fn main() {
             mode,
             device,
             bind,
-            tui,
+            no_tui,
         } => {
             let args = serve::ServeArgs {
                 port,
                 mode,
                 device,
                 bind,
-                no_tui: !tui,
+                no_tui,
             };
-            if tui {
-                println!("TUI dashboard is coming in a later phase - running in log mode for now");
-            }
             serve::run(args).await
         }
         Commands::Status => {
