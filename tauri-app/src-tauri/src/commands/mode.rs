@@ -166,3 +166,38 @@ pub async fn switch_to_cli() -> Result<(), String> {
     mode_lock::release();
     open_cli_terminal()
 }
+
+/// Persist the current GUI UI preferences (language, theme color) to ui.json so
+/// the CLI can pick the same language and theme.
+#[tauri::command]
+pub fn save_ui_prefs(
+    language: String,
+    theme_color: String,
+) -> Result<(), String> {
+    crate::app_config::save_ui_prefs(&crate::app_config::UiPrefs {
+        language,
+        theme_color,
+    })
+}
+
+/// Export the current GUI theme colors to theme.json for the CLI TUI.
+#[tauri::command]
+pub fn save_theme_colors(
+    primary: String,
+    secondary: String,
+    tertiary: String,
+    surface: String,
+    surface_variant: String,
+    on_surface: String,
+    error: String,
+) -> Result<(), String> {
+    crate::app_config::save_theme_colors(&crate::app_config::ThemeColors {
+        primary,
+        secondary,
+        tertiary,
+        surface,
+        surface_variant,
+        on_surface,
+        error,
+    })
+}

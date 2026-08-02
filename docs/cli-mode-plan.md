@@ -145,6 +145,36 @@ micyou tui                                                              交互�
 - 三平台 `cargo build` 验证
 - 可选：发布二进制分发
 
+## 已完成（2026-08-02 追加）
+
+### 设置统一（GUI ↔ CLI 同步）
+
+- `src-tauri/src/app_config.rs`：GUI/CLI 共享 `~/.config/micyou/settings.json`（AudioDspSettings schema）、`ui.json`（语言偏好）、`theme.json`（主题色）
+- GUI 启动时从 settings.json 加载 DSP 设置；`update_audio_settings` 写入 state 同时落盘；新增 `get_audio_settings` 命令供前端读取
+- 前端 loadSettings 优先读后端文件设置（localStorage 仅作兼容回退）
+- CLI 的 config.rs 改为复用 `tauri_app_lib::app_config`，与 GUI 同一文件
+
+### CLI 多语言本地化
+
+- `micyou-cli/src/i18n.rs`：7 种语言（zh/en/cat/lzh/zh-hk/zh-ss/zh-tw），语言检测顺序：ui.json → LANG 环境变量 → 默认 zh
+- GUI 切换语言时经 `save_ui_prefs` 写入 ui.json，CLI 自动跟随
+- TUI 全部界面文案走 i18n
+
+### 配色统一
+
+- GUI 主题生成后经 `save_theme_colors` 导出当前主题色到 theme.json（CSS 变量 HSL → hex）
+- CLI `theme.rs` 读取 theme.json，缺失时回退内置 Morandi 色板；频谱渐变色由主色派生（cava 风格，冷→暖）
+
+### cava 风格音频频谱
+
+- TUI 仪表盘新增频谱块：64 band（0..1）→ 采样到列宽渲染垂直条，颜色按高度走主题渐变（底部冷色 → 顶部暖色）
+- CLI serve 默认开启 `spectrum_streaming_enabled`，TuiEventSink 转发 `audio-spectrum` 事件
+
+### 连接模式 / 端口 / IP 显示
+
+- `micyou serve --mode wifi|usb|web`（默认 wifi）；usb 模式自动调 `enable_usb_mode`（adb 端口转发）
+- TUI 状态区显示：模式、监听端口、本机 IP 列表（复用 `query_network_interfaces` 过滤虚拟网卡），作为手机端连接地址提示
+
 ## 已确认决策
 
 1. Web 模式纳入 CLI（`serve --mode web`）

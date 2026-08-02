@@ -170,7 +170,14 @@ fn build_menu<R: Runtime>(
     let separator = PredefinedMenuItem::separator(app)?;
     Menu::with_items(
         app,
-        &[&show_hide, &toggle_stream, &separator, &switch_cli, &separator, &exit],
+        &[
+            &show_hide,
+            &toggle_stream,
+            &separator,
+            &switch_cli,
+            &separator,
+            &exit,
+        ],
     )
 }
 

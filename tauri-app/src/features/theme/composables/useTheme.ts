@@ -1,5 +1,6 @@
 import { watchEffect } from 'vue';
 import { useStorage } from '@vueuse/core';
+import { invoke } from '@tauri-apps/api/core';
 
 // Represents an HSL color configuration
 export interface HslColor {
@@ -196,6 +197,9 @@ export function useTheme() {
           ${darkCSS}
         }
       `;
+
+      // Export the active theme colors for the CLI TUI (theme.json)
+      exportThemeToCli();
     }
   });
 
@@ -208,5 +212,48 @@ export function useTheme() {
     customVariant,
     customCss,
   };
+}
+
+/**
+ * Read the currently applied CSS variables and write them to theme.json so the
+ * CLI TUI can match the GUI theme exactly.
+ */
+function exportThemeToCli() {
+  if (typeof document === 'undefined' || typeof getComputedStyle === 'undefined') return;
+  try {
+    const read = (name: string): string => {
+      const raw = getComputedStyle(document.documentElement)
+        .getPropertyValue(name)
+        .trim();
+      const parts = raw.split(/\s+/).map((p) => parseFloat(p));
+      if (parts.length < 3 || parts.some(Number.isNaN)) return '';
+      return hslToHex(parts[0], parts[1], parts[2]);
+    };
+    void invoke('save_theme_colors', {
+      primary: read('--primary') || '#8d8768',
+      secondary: read('--secondary') || '#8d8768',
+      tertiary: read('--tertiary') || '#8d8768',
+      surface: read('--surface') || '#1e1d1a',
+      surfaceVariant: read('--surface-variant') || '#2a2824',
+      onSurface: read('--on-surface') || '#e7e6e4',
+      error: read('--error') || '#d17a7a',
+    });
+  } catch (e) {
+    console.error('export theme colors failed:', e);
+  }
+}
+
+function hslToHex(h: number, s: number, l: number): string {
+  const sn = s / 100;
+  const ln = l / 100;
+  const k = (n: number) => (n + h / 30) % 12;
+  const a = sn * Math.min(ln, 1 - ln);
+  const f = (n: number) =>
+    ln - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1)));
+  const toHex = (v: number) =>
+    Math.round(255 * v)
+      .toString(16)
+      .padStart(2, '0');
+  return `#${toHex(f(0))}${toHex(f(8))}${toHex(f(4))}`;
 }
 

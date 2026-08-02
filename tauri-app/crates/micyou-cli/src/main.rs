@@ -1,7 +1,9 @@
 mod commands;
 mod config;
 mod events;
+mod i18n;
 mod serve;
+mod theme;
 mod tui;
 
 use clap::{Parser, Subcommand};
@@ -26,8 +28,8 @@ enum Commands {
         /// 音频服务器端口（UDP 端口自动 +1）
         #[arg(long, default_value_t = 4750)]
         port: u16,
-        /// 服务模式：tcp | web | usb
-        #[arg(long, default_value = "tcp")]
+        /// 服务模式：wifi | usb | web
+        #[arg(long, default_value = "wifi", value_parser = ["wifi", "usb", "web"])]
         mode: String,
         /// 指定输出音频设备名称
         #[arg(long)]

@@ -1,4 +1,6 @@
 use crate::events::Event;
+use crate::i18n;
+use crate::theme::{self, Rgba, Theme};
 use crossterm::event::{self, Event as CrosstermEvent, KeyCode, KeyEvent, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal::{
@@ -18,11 +20,10 @@ use tauri_app_lib::server::ServerState;
 use tauri_app_lib::stats::AudioMetrics;
 use tauri_app_lib::tcp_server::DeviceInfo;
 
-const TABS: [&str; 4] = ["仪表盘", "音频参数", "处理链路", "日志"];
-
 pub struct TuiApp {
     pub tab: usize,
     pub port: u16,
+    pub mode: String,
     pub device: Option<DeviceInfo>,
     pub metrics: Option<AudioMetrics>,
     pub level: u32,
@@ -33,13 +34,27 @@ pub struct TuiApp {
     pub chain_index: usize,
     pub logs: VecDeque<String>,
     pub last_event: String,
+    /// Processed spectrum (64 bands, 0..1) for the cava-style visualizer.
+    pub spectrum: Vec<f32>,
+    pub lang: String,
+    pub theme: Theme,
+    /// Local IPs (sorted, virtual adapters filtered) shown as connect hints.
+    pub ips: Vec<String>,
 }
 
 impl TuiApp {
-    pub fn new(settings: AudioDspSettings, port: u16) -> Self {
+    pub fn new(settings: AudioDspSettings, port: u16, mode: String) -> Self {
+        let lang = i18n::detect_lang();
+        let ips = tauri_app_lib::server::query_network_interfaces()
+            .into_iter()
+            .map(|i| i.ip)
+            .filter(|ip| !ip.is_empty())
+            .take(4)
+            .collect();
         Self {
             tab: 0,
             port,
+            mode,
             device: None,
             metrics: None,
             level: 0,
@@ -50,14 +65,23 @@ impl TuiApp {
             chain_index: 0,
             logs: VecDeque::from(["[tui] started".to_string()]),
             last_event: String::new(),
+            spectrum: vec![0.0; 64],
+            lang,
+            theme: theme::load(),
+            ips,
         }
+    }
+
+    fn t(&self, key: &str) -> String {
+        i18n::tr(&self.lang, key)
     }
 
     pub fn on_event(&mut self, ev: Event) {
         match ev {
             Event::DeviceConnected(info) => {
+                let name = info.name.clone();
                 self.device = Some(info);
-                self.log(format!("[mic] connected: {}", self.device.as_ref().unwrap().name));
+                self.log(format!("[mic] {}: {name}", self.t("connected")));
             }
             Event::DeviceDisconnected => {
                 self.device = None;
@@ -70,7 +94,11 @@ impl TuiApp {
                 self.log(format!("[mic] muted: {muted}"));
             }
             Event::Level(level) => self.level = level,
-            Event::Spectrum(_raw, _processed) => {}
+            Event::Spectrum(_raw, processed) => {
+                if processed.len() >= 64 {
+                    self.spectrum.clone_from(&processed);
+                }
+            }
             Event::Stopped => {
                 self.log("[server] stopped".to_string());
             }
@@ -90,6 +118,15 @@ impl TuiApp {
         }
     }
 
+    fn tabs(&self) -> Vec<String> {
+        vec![
+            self.t("tab_dashboard"),
+            self.t("tab_audio"),
+            self.t("tab_chain"),
+            self.t("tab_logs"),
+        ]
+    }
+
     pub fn render(&mut self, frame: &mut Frame, state: &ServerState) {
         let area = frame.area();
         let chunks = Layout::default()
@@ -102,30 +139,31 @@ impl TuiApp {
             ])
             .split(area);
 
+        let theme = self.theme;
         let title = Line::from(vec![
             Span::styled(
                 " MicYou ",
                 Style::default()
                     .fg(Color::Black)
-                    .bg(Color::Cyan)
+                    .bg(theme.primary.to_color())
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::raw("  CLI 模式 "),
+            Span::raw(format!("  {} ", self.t("app_title"))),
             Span::styled(
                 format!("({})", std::env::consts::OS),
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(theme.secondary.to_color()),
             ),
         ]);
         frame.render_widget(Paragraph::new(title), chunks[0]);
 
-        let tabs = Tabs::new(TABS.to_vec())
+        let tabs = Tabs::new(self.tabs())
             .select(self.tab)
             .block(Block::default().borders(Borders::NONE))
-            .style(Style::default().fg(Color::Cyan))
+            .style(Style::default().fg(theme.primary.to_color()))
             .highlight_style(
                 Style::default()
                     .fg(Color::Black)
-                    .bg(Color::Cyan)
+                    .bg(theme.primary.to_color())
                     .add_modifier(Modifier::BOLD),
             );
         frame.render_widget(tabs, chunks[1]);
@@ -138,49 +176,64 @@ impl TuiApp {
         }
 
         let footer = Line::from(vec![
-            Span::styled(" q ", Style::default().fg(Color::Black).bg(Color::Red)),
-            Span::raw("退出"),
+            Span::styled(" q ", Style::default().fg(Color::Black).bg(theme.error.to_color())),
+            Span::raw(self.t("quit_hint")),
             Span::raw("  "),
-            Span::styled(" Tab ", Style::default().fg(Color::Black).bg(Color::Blue)),
-            Span::raw("切换"),
+            Span::styled(" Tab ", Style::default().fg(Color::Black).bg(theme.secondary.to_color())),
+            Span::raw(self.t("tab_switch")),
             Span::raw("  "),
-            Span::styled(" ↑↓ ", Style::default().fg(Color::Black).bg(Color::Blue)),
-            Span::raw("选择"),
+            Span::styled(" ↑↓ ", Style::default().fg(Color::Black).bg(theme.secondary.to_color())),
+            Span::raw(self.t("nav")),
             Span::raw("  "),
-            Span::styled(" Enter ", Style::default().fg(Color::Black).bg(Color::Green)),
-            Span::raw("开关"),
+            Span::styled(" Enter ", Style::default().fg(Color::Black).bg(theme.primary.to_color())),
+            Span::raw(self.t("toggle")),
             Span::raw("  "),
-            Span::styled(" -/+ ", Style::default().fg(Color::Black).bg(Color::Green)),
-            Span::raw("调整"),
+            Span::styled(" -/+ ", Style::default().fg(Color::Black).bg(theme.primary.to_color())),
+            Span::raw(self.t("adjust")),
             Span::raw("  "),
             Span::raw(&self.last_event),
         ]);
         frame.render_widget(Paragraph::new(footer), chunks[3]);
     }
 
+    fn mode_label(&self) -> String {
+        match self.mode.as_str() {
+            "wifi" => self.t("mode_wifi"),
+            "usb" => self.t("mode_usb"),
+            "web" => self.t("mode_web"),
+            _ => self.t("mode_unknown"),
+        }
+    }
+
     fn render_dashboard(&self, frame: &mut Frame, area: Rect, state: &ServerState) {
+        let theme = self.theme;
         let chunks = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
             .split(area);
 
-        // Left column: status list on top, level gauge below
+        // Left column: status list on top, spectrum below
         let left_col = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
+            .constraints([Constraint::Length(9), Constraint::Min(3)])
             .split(chunks[0]);
 
         // Left: server + device status
         let mut left_items = vec![
             ListItem::new(Line::from(vec![
-                Span::raw("服务器: "),
-                Span::styled("运行中", Style::default().fg(Color::Green)),
+                Span::raw(format!("{}: ", self.t("state"))),
+                Span::styled(
+                    self.t("server_running"),
+                    Style::default().fg(theme.primary.to_color()),
+                ),
             ])),
             ListItem::new(Line::from(vec![
-                Span::raw("监听: "),
+                Span::raw(format!("{}: ", self.t("mode"))),
+                Span::styled(self.mode_label(), Style::default().fg(theme.tertiary.to_color())),
+                Span::raw(format!("  {}: ", self.t("listening"))),
                 Span::styled(
-                    format!("端口 {}", self.port),
-                    Style::default().fg(Color::Cyan),
+                    format!("{} {}", self.t("port"), self.port),
+                    Style::default().fg(theme.secondary.to_color()),
                 ),
             ])),
             ListItem::new(""),
@@ -188,105 +241,208 @@ impl TuiApp {
         match &self.device {
             Some(device) => {
                 left_items.push(ListItem::new(Line::from(vec![
-                    Span::styled("设备: ", Style::default().add_modifier(Modifier::BOLD)),
-                    Span::styled(&device.name, Style::default().fg(Color::Green)),
+                    Span::styled(
+                        format!("{}: ", self.t("device")),
+                        Style::default().add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(&device.name, Style::default().fg(theme.primary.to_color())),
                 ])));
                 left_items.push(ListItem::new(format!(
-                    "  ip: {}  延迟: {}ms",
-                    device.ip, device.latency
+                    "  ip: {}  {}: {}ms",
+                    device.ip,
+                    self.t("latency"),
+                    device.latency
                 )));
             }
             None => {
                 left_items.push(ListItem::new(Line::from(vec![
-                    Span::styled("设备: ", Style::default().add_modifier(Modifier::BOLD)),
                     Span::styled(
-                        "未连接 - 在手机上打开 MicYou 并连接",
-                        Style::default().fg(Color::Yellow),
+                        format!("{}: ", self.t("device")),
+                        Style::default().add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        self.t("device_not_connected"),
+                        Style::default().fg(theme.error.to_color()),
                     ),
                 ])));
             }
         }
         left_items.push(ListItem::new(format!(
-            "muted: {}   web clients: {}",
-            self.muted, self.web_clients
+            "{}: {}  {}: {}",
+            self.t("muted"),
+            self.muted,
+            self.t("web_clients"),
+            self.web_clients
         )));
 
-        let left = List::new(left_items).block(Block::default().borders(Borders::ALL).title("状态"));
+        // Local IPs as connect hints
+        if !self.ips.is_empty() {
+            left_items.push(ListItem::new(""));
+            left_items.push(ListItem::new(Line::from(vec![
+                Span::styled(
+                    format!("{}: ", self.t("local_ips")),
+                    Style::default().add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    self.ips.join(", "),
+                    Style::default().fg(theme.tertiary.to_color()),
+                ),
+            ])));
+        }
+
+        let left = List::new(left_items)
+            .block(Block::default().borders(Borders::ALL).title(self.t("state")));
         frame.render_widget(left, left_col[0]);
 
-        // Level gauge
+        // Cava-style spectrum
+        self.render_spectrum(frame, left_col[1]);
+
+        // Right column: level gauge on top, metrics below
+        let right_col = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(4), Constraint::Min(3)])
+            .split(chunks[1]);
+
         let gauge = Gauge::default()
-            .block(Block::default().borders(Borders::ALL).title("输入电平"))
-            .gauge_style(
-                Style::default().fg(if self.level > 80 { Color::Red } else { Color::Green }),
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(self.t("input_level")),
             )
+            .gauge_style(Style::default().fg(if self.level > 80 {
+                theme.error.to_color()
+            } else {
+                theme.primary.to_color()
+            }))
             .ratio(f64::from(self.level.min(100)) / 100.0)
             .label(format!("{}", self.level));
-        frame.render_widget(gauge, left_col[1]);
+        frame.render_widget(gauge, right_col[0]);
 
-        // Right: metrics
+        // Metrics
         let mut rows = vec![
-            "指标".to_string(),
+            self.t("metric"),
             "─────".to_string(),
-            "位速率:   -".to_string(),
-            "采样率:   -".to_string(),
-            "总延迟:   -".to_string(),
-            "网络延迟: -".to_string(),
-            "抖动:     -".to_string(),
-            "丢包率:   -".to_string(),
-            "缓冲:     -".to_string(),
+            format!("{}:   -", self.t("bitrate")),
+            format!("{}:   -", self.t("sample_rate")),
+            format!("{}:   -", self.t("latency")),
+            format!("{}: -", self.t("network_latency")),
+            format!("{}:     -", self.t("jitter")),
+            format!("{}:   -", self.t("packet_loss")),
+            format!("{}:     -", self.t("buffer")),
         ];
         if let Some(m) = &self.metrics {
-            rows[2] = format!("位速率:   {} kbps", m.bitrate / 1000);
-            rows[3] = format!("采样率:   {} Hz", m.sample_rate);
-            rows[4] = format!("总延迟:   {} ms", m.latency_ms);
-            rows[5] = format!("网络延迟: {} ms", m.network_latency_ms);
-            rows[6] = format!("抖动:     {:.1} ms", m.jitter_ms);
-            rows[7] = format!("丢包率:   {:.2}%", m.packet_loss_rate * 100.0);
-            rows[8] = format!("缓冲:     {} ms", m.buffer_duration_ms);
+            rows[2] = format!("{}:   {} kbps", self.t("bitrate"), m.bitrate / 1000);
+            rows[3] = format!("{}:   {} Hz", self.t("sample_rate"), m.sample_rate);
+            rows[4] = format!("{}:   {} ms", self.t("latency"), m.latency_ms);
+            rows[5] = format!("{}: {} ms", self.t("network_latency"), m.network_latency_ms);
+            rows[6] = format!("{}:     {:.1} ms", self.t("jitter"), m.jitter_ms);
+            rows[7] = format!("{}:   {:.2}%", self.t("packet_loss"), m.packet_loss_rate * 100.0);
+            rows[8] = format!("{}:     {} ms", self.t("buffer"), m.buffer_duration_ms);
         }
-        let right = List::new(rows).block(Block::default().borders(Borders::ALL).title("音频指标"));
-        frame.render_widget(right, chunks[1]);
+        let right = List::new(rows)
+            .block(Block::default().borders(Borders::ALL).title(self.t("audio_metrics")));
+        frame.render_widget(right, right_col[1]);
 
         let _ = state;
     }
 
+    /// Cava-style vertical bars: each column's height = spectrum band value.
+    /// Color follows the theme gradient bottom (cool) to top (warm).
+    fn render_spectrum(&self, frame: &mut Frame, area: Rect) {
+        let width = area.width as usize;
+        let height = area.height as usize;
+        if width == 0 || height == 0 {
+            return;
+        }
+        let n_cols = width.min(64).max(4);
+        // Downsample the 64 bands to the available column count
+        let bands: Vec<f32> = (0..n_cols)
+            .map(|i| {
+                let src = i * 64 / n_cols;
+                self.spectrum.get(src).copied().unwrap_or(0.0).min(1.0)
+            })
+            .collect();
+
+        let mut lines: Vec<Line> = Vec::with_capacity(height);
+        for row in 0..height {
+            // row 0 = top; bars grow from the bottom
+            let threshold = (height - 1 - row) as f32 / (height - 1).max(1) as f32;
+            let t = (height - 1 - row) as f32 / (height - 1).max(1) as f32;
+            let color = gradient_at(self.theme.gradient, t).to_color();
+            let mut text = String::with_capacity(width);
+            for v in &bands {
+                text.push(if *v >= threshold { '█' } else { ' ' });
+            }
+            lines.push(Line::from(Span::styled(
+                text,
+                Style::default().fg(color),
+            )));
+        }
+        let block = Block::default().borders(Borders::ALL).title(self.t("spectrum"));
+        frame.render_widget(Paragraph::new(lines).block(block), area);
+    }
+
     fn render_settings(&mut self, frame: &mut Frame, area: Rect) {
+        let theme = self.theme;
         let items: Vec<ListItem> = vec![
-            ListItem::new(format!("增益 (Gain)                    {:.1} dB", self.settings.gain)),
             ListItem::new(format!(
-                "回声消除 (AEC)                {}",
-                on_off(self.settings.aec_enabled)
+                "{} (Gain)                    {:.1} dB",
+                self.t("gain"),
+                self.settings.gain
             )),
             ListItem::new(format!(
-                "噪声抑制 (Noise Reduction)    {}",
-                on_off(self.settings.ns_enabled)
+                "{} (AEC)                {}",
+                self.t("aec"),
+                on_off(&self.lang, self.settings.aec_enabled)
             )),
             ListItem::new(format!(
-                "去混响 (Dereverb)             {}",
-                on_off(self.settings.dereverb_enabled)
+                "{} (Noise Reduction)    {}",
+                self.t("noise_reduction"),
+                on_off(&self.lang, self.settings.ns_enabled)
             )),
             ListItem::new(format!(
-                "自动增益 (AGC)                {}",
-                on_off(self.settings.agc_enabled)
+                "{} (Dereverb)             {}",
+                self.t("dereverb"),
+                on_off(&self.lang, self.settings.dereverb_enabled)
             )),
             ListItem::new(format!(
-                "语音检测 (VAD)                {}",
-                on_off(self.settings.vad_enabled)
+                "{} (AGC)                {}",
+                self.t("agc"),
+                on_off(&self.lang, self.settings.agc_enabled)
             )),
             ListItem::new(format!(
-                "输出缓冲区 (Output Buffer)    {} ms",
-                self.settings.output_buffer_ms
+                "{} (VAD)                {}",
+                self.t("vad"),
+                on_off(&self.lang, self.settings.vad_enabled)
+            )),
+            ListItem::new(format!(
+                "{} (Output Buffer)    {} {}",
+                self.t("output_buffer"),
+                self.settings.output_buffer_ms,
+                self.t("ms")
             )),
         ];
         let list = List::new(items)
-            .block(Block::default().borders(Borders::ALL).title("音频参数（Enter 开关，-/+ 调整增益与缓冲）"))
-            .highlight_style(Style::default().fg(Color::Black).bg(Color::Cyan))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(self.t("audio_params_title")),
+            )
+            .highlight_style(
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(theme.primary.to_color()),
+            )
             .highlight_symbol("> ");
-        frame.render_stateful_widget(list, area, &mut ratatui::widgets::ListState::default().with_selected(Some(self.selected_setting)));
+        frame.render_stateful_widget(
+            list,
+            area,
+            &mut ratatui::widgets::ListState::default().with_selected(Some(self.selected_setting)),
+        );
     }
 
     fn render_chain(&mut self, frame: &mut Frame, area: Rect) {
+        let theme = self.theme;
         let items: Vec<ListItem> = self
             .settings
             .processing_chain
@@ -294,28 +450,40 @@ impl TuiApp {
             .enumerate()
             .map(|(i, stage)| {
                 let label = match stage.as_str() {
-                    "AEC" => "回声消除 (AEC) 🔒",
-                    "NoiseReduction" => "噪声抑制 (NoiseReduction)",
-                    "Dereverb" => "去混响 (Dereverb)",
-                    "Equalizer" => "均衡器 (Equalizer)",
-                    "Amplifier" => "增益 (Amplifier)",
-                    "AGC" => "自动增益 (AGC)",
-                    "VAD" => "语音检测 (VAD)",
-                    other => other,
+                    "AEC" => format!("{} (AEC) 🔒", self.t("aec")),
+                    "NoiseReduction" => format!("{} (NoiseReduction)", self.t("noise_reduction")),
+                    "Dereverb" => format!("{} (Dereverb)", self.t("dereverb")),
+                    "Equalizer" => "Equalizer".to_string(),
+                    "Amplifier" => format!("{} (Amplifier)", self.t("gain")),
+                    "AGC" => format!("{} (AGC)", self.t("agc")),
+                    "VAD" => format!("{} (VAD)", self.t("vad")),
+                    other => other.to_string(),
                 };
                 if i == 0 && stage == "AEC" {
-                    ListItem::new(format!("{i}. {label}").to_string())
-                        .style(Style::default().fg(Color::Yellow))
+                    ListItem::new(format!("{i}. {label}"))
+                        .style(Style::default().fg(theme.tertiary.to_color()))
                 } else {
-                    ListItem::new(format!("{i}. {label}").to_string())
+                    ListItem::new(format!("{i}. {label}"))
                 }
             })
             .collect();
         let list = List::new(items)
-            .block(Block::default().borders(Borders::ALL).title("处理链路（↑↓ 选择，+/- 上下移动，AEC 固定首位）"))
-            .highlight_style(Style::default().fg(Color::Black).bg(Color::Cyan))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(self.t("chain_title")),
+            )
+            .highlight_style(
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(theme.primary.to_color()),
+            )
             .highlight_symbol("> ");
-        frame.render_stateful_widget(list, area, &mut ratatui::widgets::ListState::default().with_selected(Some(self.chain_index)));
+        frame.render_stateful_widget(
+            list,
+            area,
+            &mut ratatui::widgets::ListState::default().with_selected(Some(self.chain_index)),
+        );
     }
 
     fn render_logs(&self, frame: &mut Frame, area: Rect) {
@@ -326,13 +494,24 @@ impl TuiApp {
             .take(20)
             .map(|l| ListItem::new(l.clone()))
             .collect();
-        let list = List::new(items).block(Block::default().borders(Borders::ALL).title("日志"));
+        let list = List::new(items)
+            .block(Block::default().borders(Borders::ALL).title(self.t("logs")));
         frame.render_widget(list, area);
     }
 }
 
-fn on_off(v: bool) -> &'static str {
-    if v { "开" } else { "关" }
+/// Pick a gradient stop for normalized position t in [0, 1].
+fn gradient_at(gradient: [Rgba; 8], t: f32) -> Rgba {
+    let idx = ((t.clamp(0.0, 1.0)) * 7.0).round() as usize;
+    gradient[idx.min(7)]
+}
+
+fn on_off(lang: &str, v: bool) -> String {
+    if v {
+        i18n::tr(lang, "enabled")
+    } else {
+        i18n::tr(lang, "disabled")
+    }
 }
 
 /// Enter raw terminal mode; returns a guard that restores it on drop.
@@ -349,7 +528,12 @@ pub fn leave() -> Result<(), String> {
 
 /// Run the TUI dashboard until the user quits (q / Ctrl+C).
 /// `state` gives live access to the DSP settings and spectrum flag.
-pub fn run_tui(rx: Receiver<Event>, state: Arc<ServerState>, port: u16) -> Result<(), String> {
+pub fn run_tui(
+    rx: Receiver<Event>,
+    state: Arc<ServerState>,
+    port: u16,
+    mode: String,
+) -> Result<(), String> {
     enter()?;
 
     let settings = state
@@ -357,15 +541,19 @@ pub fn run_tui(rx: Receiver<Event>, state: Arc<ServerState>, port: u16) -> Resul
         .read()
         .map(|s| s.clone())
         .unwrap_or_default();
-    let mut app = TuiApp::new(settings, port);
+    let mut app = TuiApp::new(settings, port, mode);
     let mut terminal = ratatui::Terminal::new(ratatui::backend::CrosstermBackend::new(stdout()))
         .map_err(|e| e.to_string())?;
 
     let result = (|| -> Result<(), String> {
         loop {
-            terminal.draw(|frame| app.render(frame, &state)).map_err(|e| e.to_string())?;
+            terminal
+                .draw(|frame| app.render(frame, &state))
+                .map_err(|e| e.to_string())?;
 
-            if crossterm::event::poll(std::time::Duration::from_millis(100)).map_err(|e| e.to_string())? {
+            if crossterm::event::poll(std::time::Duration::from_millis(100))
+                .map_err(|e| e.to_string())?
+            {
                 if let CrosstermEvent::Key(key) = event::read().map_err(|e| e.to_string())? {
                     if handle_key(&mut app, key, &state) {
                         break;
@@ -390,16 +578,16 @@ fn handle_key(app: &mut TuiApp, key: KeyEvent, state: &ServerState) -> bool {
         KeyCode::Char('q') | KeyCode::Char('Q') => return true,
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => return true,
         KeyCode::Tab => {
-            app.tab = (app.tab + 1) % TABS.len();
+            app.tab = (app.tab + 1) % 4;
         }
         KeyCode::BackTab => {
-            app.tab = (app.tab + TABS.len() - 1) % TABS.len();
+            app.tab = (app.tab + 3) % 4;
         }
         KeyCode::Left => {
-            app.tab = (app.tab + TABS.len() - 1) % TABS.len();
+            app.tab = (app.tab + 3) % 4;
         }
         KeyCode::Right => {
-            app.tab = (app.tab + 1) % TABS.len();
+            app.tab = (app.tab + 1) % 4;
         }
         KeyCode::Up => match app.tab {
             1 => app.selected_setting = app.selected_setting.saturating_sub(1),
@@ -454,18 +642,17 @@ fn handle_key(app: &mut TuiApp, key: KeyEvent, state: &ServerState) -> bool {
                 sync_settings(&app.settings, state);
             }
         }
-        KeyCode::Char('+') | KeyCode::Char('=')
-            if app.tab == 1 => {
-                match app.selected_setting {
-                    0 => app.settings.gain = (app.settings.gain + 1.0).clamp(-50.0, 50.0),
-                    6 => {
-                        app.settings.output_buffer_ms =
-                            (app.settings.output_buffer_ms + 100).clamp(100, 1200);
-                    }
-                    _ => {}
+        KeyCode::Char('+') | KeyCode::Char('=') if app.tab == 1 => {
+            match app.selected_setting {
+                0 => app.settings.gain = (app.settings.gain + 1.0).clamp(-50.0, 50.0),
+                6 => {
+                    app.settings.output_buffer_ms =
+                        (app.settings.output_buffer_ms + 100).clamp(100, 1200);
                 }
-                sync_settings(&app.settings, state);
+                _ => {}
             }
+            sync_settings(&app.settings, state);
+        }
         _ => {}
     }
     false

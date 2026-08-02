@@ -19,6 +19,23 @@ pub struct ServeArgs {
 pub async fn run(args: ServeArgs) -> Result<(), String> {
     tauri_app_lib::mode_lock::acquire(RunMode::Cli)?;
 
+    // Validate / normalize the connection mode (wifi | usb | web)
+    let mode = match args.mode.as_str() {
+        "wifi" | "usb" | "web" => args.mode.clone(),
+        other => {
+            return Err(format!(
+                "invalid mode '{other}' (expected wifi, usb or web)"
+            ));
+        }
+    };
+
+    // USB mode: set up adb port forwarding before starting the server
+    if mode == "usb" {
+        println!("Setting up USB (adb) mode on port {}", args.port);
+        tauri_app_lib::commands::network::enable_usb_mode(args.port, None)
+            .map_err(|e| format!("enable_usb_mode failed: {e}"))?;
+    }
+
     let state = build_state();
     let (tx, rx) = channel::<Event>();
     let events: Arc<dyn tauri_app_lib::events::ServerEvents> = if args.no_tui {
@@ -30,7 +47,7 @@ pub async fn run(args: ServeArgs) -> Result<(), String> {
     let result = start_server_inner(
         &state,
         args.port,
-        args.mode,
+        mode.clone(),
         args.bind,
         args.device,
         events.clone(),
@@ -51,7 +68,7 @@ pub async fn run(args: ServeArgs) -> Result<(), String> {
         println!("Stopping server...");
         let _ = stop_server_inner(&state, events).await;
     } else {
-        let tui_result = crate::tui::run_tui(rx, state.clone(), args.port);
+        let tui_result = crate::tui::run_tui(rx, state.clone(), args.port, mode);
         let _ = stop_server_inner(&state, events).await;
         tui_result?;
     }
@@ -65,7 +82,7 @@ pub fn build_state() -> Arc<ServerState> {
     Arc::new(ServerState {
         dsp_settings: Arc::new(std::sync::RwLock::new(settings)),
         is_monitoring: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        spectrum_streaming_enabled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        spectrum_streaming_enabled: Arc::new(std::sync::atomic::AtomicBool::new(true)),
         ..ServerState::default()
     })
 }

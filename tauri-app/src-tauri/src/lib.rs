@@ -1,6 +1,7 @@
 #![allow(unexpected_cfgs)]
 
 pub mod adb_manager;
+pub mod app_config;
 pub mod audio_stream;
 pub mod blackhole;
 pub mod commands;
@@ -25,7 +26,6 @@ use tauri::Manager;
 use tokio::sync::Mutex;
 
 use crate::tray::TrayContext;
-use micyou_audio::dsp::AudioDspSettings;
 use stats::NetworkStats;
 
 #[cfg(target_os = "macos")]
@@ -70,7 +70,7 @@ pub fn run() {
             cancel_token: Arc::new(Mutex::new(None)),
             background_tasks: Arc::new(Mutex::new(Vec::new())),
             mdns_manager: Arc::new(Mutex::new(None)),
-            dsp_settings: Arc::new(RwLock::new(AudioDspSettings::default())),
+            dsp_settings: Arc::new(RwLock::new(crate::app_config::load_dsp_settings())),
             is_monitoring: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             spectrum_streaming_enabled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             network_stats: Arc::new(NetworkStats::default()),
@@ -147,6 +147,9 @@ pub fn run() {
             commands::mode::get_mode_status,
             commands::mode::release_gui_lock,
             commands::mode::switch_to_cli,
+            commands::mode::save_ui_prefs,
+            commands::mode::save_theme_colors,
+            commands::get_audio_settings,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

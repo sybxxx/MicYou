@@ -867,6 +867,15 @@ if (stored === 'English') stored = 'en';
 if (stored === '简体中文') stored = 'zh';
 
 const currentLanguage = ref(stored);
+function saveUiPrefs() {
+  const effective = currentLanguage.value === 'system'
+    ? (navigator.language.toLowerCase().startsWith('zh') ? 'zh' : 'en')
+    : currentLanguage.value;
+  void invoke('save_ui_prefs', {
+    language: effective,
+    themeColor: localStorage.getItem('micyou_theme_color') || 'theme-blue',
+  }).catch((e) => console.error('save_ui_prefs failed:', e));
+}
 watch(currentLanguage, (newLang) => {
   localStorage.setItem('micyou_language', newLang);
   if (newLang === 'system') {
@@ -874,6 +883,8 @@ watch(currentLanguage, (newLang) => {
   } else {
     locale.value = newLang;
   }
+  // Share the language with the CLI via ui.json
+  saveUiPrefs();
 });
 
 // Reactive Settings State
@@ -1128,6 +1139,7 @@ onMounted(async () => {
   isMounted = true;
   handleOpenState(props.isOpen);
   refreshModeStatus();
+  saveUiPrefs();
   try {
     appVersion.value = await invoke('get_app_version');
   } catch (e) {
@@ -1174,13 +1186,33 @@ const fetchDevices = async () => {
   checkPipeWireStatus();
 };
 
-const loadSettings = () => {
-  const saved = localStorage.getItem('micyou_audio_settings');
-  if (saved) {
-    try {
-      Object.assign(settings, JSON.parse(saved));
-    } catch (e) {
-      console.error("Failed to parse settings", e);
+const loadSettings = async () => {
+  // Prefer the shared settings.json (written by update_audio_settings, also used
+  // by the CLI) so GUI and CLI stay in sync; localStorage stays as a fallback.
+  try {
+    const backend = await invoke<Record<string, unknown>>('get_audio_settings');
+    if (backend && Object.keys(backend).length > 0) {
+      Object.assign(settings, backend);
+      localStorage.setItem('micyou_audio_settings', JSON.stringify(settings));
+    } else {
+      const saved = localStorage.getItem('micyou_audio_settings');
+      if (saved) {
+        try {
+          Object.assign(settings, JSON.parse(saved));
+        } catch (e) {
+          console.error("Failed to parse settings", e);
+        }
+      }
+    }
+  } catch (e) {
+    console.error("get_audio_settings failed, using localStorage", e);
+    const saved = localStorage.getItem('micyou_audio_settings');
+    if (saved) {
+      try {
+        Object.assign(settings, JSON.parse(saved));
+      } catch (err) {
+        console.error("Failed to parse settings", err);
+      }
     }
   }
 
@@ -1278,7 +1310,7 @@ async function startAudioMonitoring() {
     await fetchDevices();
     if (!isMonitoringCurrent(token)) return;
 
-    loadSettings();
+    await loadSettings();
     if (!isMonitoringCurrent(token)) return;
 
     // Sync existing settings to backend on open

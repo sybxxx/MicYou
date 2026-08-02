@@ -1,5 +1,5 @@
 use serde::Serialize;
-use std::sync::atomic::{AtomicI64, AtomicU64, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU32, AtomicU64, Ordering};
 
 #[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -62,7 +62,8 @@ impl NetworkStats {
     }
 
     pub fn mark_udp_received(&self, time_ms: u64) {
-        self.last_udp_packet_time_ms.store(time_ms, Ordering::Relaxed);
+        self.last_udp_packet_time_ms
+            .store(time_ms, Ordering::Relaxed);
     }
     pub fn get_last_udp_time(&self) -> u64 {
         self.last_udp_packet_time_ms.load(Ordering::Relaxed)

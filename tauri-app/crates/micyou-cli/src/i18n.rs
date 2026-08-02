@@ -1,0 +1,540 @@
+//! Minimal i18n for the CLI/TUI.
+//!
+//! Language resolution order:
+//! 1. `~/.config/micyou/ui.json` `language` field (written by the GUI)
+//! 2. `LANG` / `LANGUAGE` environment variables
+//! 3. default: zh
+
+/// All supported locales, matching the GUI locale files.
+pub const LOCALES: &[&str] = &["zh", "en", "cat", "lzh", "zh-hk", "zh-ss", "zh-tw"];
+
+/// Detect the effective language.
+pub fn detect_lang() -> String {
+    // 1. GUI-written ui.json
+    if let Ok(prefs) = std::fs::read_to_string(
+        tauri_app_lib::app_config::ui_prefs_path(),
+    ) {
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&prefs) {
+            if let Some(lang) = json.get("language").and_then(|v| v.as_str()) {
+                if LOCALES.contains(&lang) {
+                    return lang.to_string();
+                }
+                if lang == "system" {
+                    return from_env().unwrap_or_else(|| "zh".to_string());
+                }
+            }
+        }
+    }
+    // 2. environment
+    if let Some(lang) = from_env() {
+        return lang;
+    }
+    // 3. default
+    "zh".to_string()
+}
+
+fn from_env() -> Option<String> {
+    for var in ["LANG", "LANGUAGE", "LC_ALL"] {
+        if let Ok(v) = std::env::var(var) {
+            let v = v.to_lowercase();
+            if v.starts_with("zh") {
+                if v.contains("hant") || v.contains("tw") {
+                    return Some("zh-tw".to_string());
+                }
+                if v.contains("hans") || v.contains("cn") {
+                    return Some("zh".to_string());
+                }
+                return Some("zh".to_string());
+            }
+            if v.starts_with("en") {
+                return Some("en".to_string());
+            }
+            if v.starts_with("ca") {
+                return Some("cat".to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Per-locale dictionary; `entries` is a linear list of (key, value) pairs.
+struct Dict {
+    entries: &'static [(&'static str, &'static str)],
+}
+
+const ZH: Dict = Dict {
+    entries: &[
+        ("app_title", "CLI 模式"),
+        ("tab_dashboard", "仪表盘"),
+        ("tab_audio", "音频参数"),
+        ("tab_chain", "处理链路"),
+        ("tab_logs", "日志"),
+        ("state", "状态"),
+        ("server_running", "服务器: 运行中"),
+        ("server_stopped", "服务器: 已停止"),
+        ("listening", "监听"),
+        ("port", "端口"),
+        ("device", "设备"),
+        ("device_not_connected", "未连接 - 在手机上打开 MicYou 并连接"),
+        ("muted", "静音"),
+        ("web_clients", "网页客户端"),
+        ("connected", "已连接"),
+        ("input_level", "输入电平"),
+        ("audio_metrics", "音频指标"),
+        ("metric", "指标"),
+        ("bitrate", "位速率"),
+        ("sample_rate", "采样率"),
+        ("latency", "总延迟"),
+        ("network_latency", "网络延迟"),
+        ("jitter", "抖动"),
+        ("packet_loss", "丢包率"),
+        ("buffer", "缓冲"),
+        ("audio_params_title", "音频参数（Enter 开关，-/+ 调整增益与缓冲）"),
+        ("gain", "增益"),
+        ("aec", "回声消除"),
+        ("noise_reduction", "降噪"),
+        ("dereverb", "去混响"),
+        ("agc", "AGC"),
+        ("vad", "VAD"),
+        ("output_buffer", "输出缓冲区"),
+        ("chain_title", "处理链路（↑↓ 选择，+/- 上下移动，AEC 固定首位）"),
+        ("pinned", "固定"),
+        ("logs", "日志"),
+        ("help", "q 退出  Tab 切换  ↑↓ 选择  Enter 开关  -/+ 调整"),
+        ("quit_hint", "按 q 或 Ctrl+C 退出"),
+        ("tab_switch", "Tab 切换"),
+        ("nav", "选择"),
+        ("toggle", "开关"),
+        ("adjust", "调整"),
+        ("mode", "模式"),
+        ("spectrum", "频谱"),
+        ("enabled", "开"),
+        ("disabled", "关"),
+        ("ms", "毫秒"),
+        ("kbps", "kbps"),
+        ("percent", "%"),
+        ("none", "-"),
+        ("mode_wifi", "WiFi 模式"),
+        ("mode_usb", "USB 模式"),
+        ("mode_web", "Web 模式"),
+        ("mode_unknown", "未知模式"),
+        ("network", "网络"),
+        ("local_ips", "本机 IP"),
+        ("server_addr_hint", "手机端连接地址"),
+        ("staged_hint", "更改模式/端口后需重启生效"),
+        ("level_overflow", "电平过高"),
+    ],
+};
+
+const EN: Dict = Dict {
+    entries: &[
+        ("app_title", "CLI Mode"),
+        ("tab_dashboard", "Dashboard"),
+        ("tab_audio", "Audio"),
+        ("tab_chain", "Chain"),
+        ("tab_logs", "Logs"),
+        ("state", "State"),
+        ("server_running", "Server: running"),
+        ("server_stopped", "Server: stopped"),
+        ("listening", "Listening"),
+        ("port", "port"),
+        ("device", "Device"),
+        ("device_not_connected", "Not connected - open MicYou on your phone"),
+        ("muted", "muted"),
+        ("web_clients", "web clients"),
+        ("connected", "connected"),
+        ("input_level", "Input level"),
+        ("audio_metrics", "Audio metrics"),
+        ("metric", "Metric"),
+        ("bitrate", "Bitrate"),
+        ("sample_rate", "Sample rate"),
+        ("latency", "Latency"),
+        ("network_latency", "Network latency"),
+        ("jitter", "Jitter"),
+        ("packet_loss", "Packet loss"),
+        ("buffer", "Buffer"),
+        ("audio_params_title", "Audio params (Enter toggle, -/+ adjust gain & buffer)"),
+        ("gain", "Gain"),
+        ("aec", "Echo cancellation"),
+        ("noise_reduction", "Noise reduction"),
+        ("dereverb", "Dereverb"),
+        ("agc", "AGC"),
+        ("vad", "VAD"),
+        ("output_buffer", "Output buffer"),
+        ("chain_title", "Chain (↑↓ select, +/- move, AEC pinned first)"),
+        ("pinned", "pinned"),
+        ("logs", "Logs"),
+        ("help", "q quit  Tab switch  ↑↓ select  Enter toggle  -/+ adjust"),
+        ("quit_hint", "Press q or Ctrl+C to quit"),
+        ("tab_switch", "Tab switch"),
+        ("nav", "select"),
+        ("toggle", "toggle"),
+        ("adjust", "adjust"),
+        ("mode", "Mode"),
+        ("spectrum", "Spectrum"),
+        ("enabled", "on"),
+        ("disabled", "off"),
+        ("ms", "ms"),
+        ("kbps", "kbps"),
+        ("percent", "%"),
+        ("none", "-"),
+        ("mode_wifi", "WiFi mode"),
+        ("mode_usb", "USB mode"),
+        ("mode_web", "Web mode"),
+        ("mode_unknown", "Unknown mode"),
+        ("network", "Network"),
+        ("local_ips", "Local IPs"),
+        ("server_addr_hint", "Connect from phone at"),
+        ("staged_hint", "Mode/port changes require a restart"),
+        ("level_overflow", "Level too high"),
+    ],
+};
+
+const CAT: Dict = Dict {
+    entries: &[
+        ("app_title", "CLI 模式喵~"),
+        ("tab_dashboard", "仪表盘喵~"),
+        ("tab_audio", "音频参数喵~"),
+        ("tab_chain", "处理链路喵~"),
+        ("tab_logs", "日志喵~"),
+        ("state", "状态喵~"),
+        ("server_running", "服务器: 运行中喵~"),
+        ("server_stopped", "服务器: 已停止喵~"),
+        ("listening", "监听"),
+        ("port", "端口"),
+        ("device", "设备"),
+        ("device_not_connected", "未连接喵 - 在手机上打开 MicYou 并连接喵~"),
+        ("muted", "静音"),
+        ("web_clients", "网页客户端"),
+        ("connected", "已连接"),
+        ("input_level", "输入电平"),
+        ("audio_metrics", "音频指标喵~"),
+        ("metric", "指标"),
+        ("bitrate", "位速率"),
+        ("sample_rate", "采样率"),
+        ("latency", "总延迟"),
+        ("network_latency", "网络延迟"),
+        ("jitter", "抖动"),
+        ("packet_loss", "丢包率"),
+        ("buffer", "缓冲"),
+        ("audio_params_title", "音频参数（Enter 开关，-/+ 调整增益与缓冲）喵~"),
+        ("gain", "增益"),
+        ("aec", "回声消除"),
+        ("noise_reduction", "降噪"),
+        ("dereverb", "去混响"),
+        ("agc", "AGC"),
+        ("vad", "VAD"),
+        ("output_buffer", "输出缓冲区"),
+        ("chain_title", "处理链路（↑↓ 选择，+/- 上下移动，AEC 固定首位）喵~"),
+        ("pinned", "固定"),
+        ("logs", "日志"),
+        ("help", "q 退出  Tab 切换  ↑↓ 选择  Enter 开关  -/+ 调整"),
+        ("quit_hint", "按 q 或 Ctrl+C 退出喵~"),
+        ("tab_switch", "Tab 切换"),
+        ("nav", "选择"),
+        ("toggle", "开关"),
+        ("adjust", "调整"),
+        ("mode", "模式"),
+        ("spectrum", "频谱"),
+        ("enabled", "开"),
+        ("disabled", "关"),
+        ("ms", "毫秒"),
+        ("kbps", "kbps"),
+        ("percent", "%"),
+        ("none", "-"),
+        ("mode_wifi", "WiFi 模式喵~"),
+        ("mode_usb", "USB 模式喵~"),
+        ("mode_web", "Web 模式喵~"),
+        ("mode_unknown", "未知模式喵~"),
+        ("network", "网络"),
+        ("local_ips", "本机 IP"),
+        ("server_addr_hint", "手机端连接地址"),
+        ("staged_hint", "更改模式/端口后需重启生效喵~"),
+        ("level_overflow", "电平过高"),
+    ],
+};
+
+const LZH: Dict = Dict {
+    entries: &[
+        ("app_title", "CLI 模式"),
+        ("tab_dashboard", "仪表盘"),
+        ("tab_audio", "音频参数"),
+        ("tab_chain", "处理链路"),
+        ("tab_logs", "日志"),
+        ("state", "状态"),
+        ("server_running", "服务器: 运行中"),
+        ("server_stopped", "服务器: 已停止"),
+        ("listening", "监听"),
+        ("port", "端口"),
+        ("device", "设备"),
+        ("device_not_connected", "未连接 - 手机开 MicYou 以连之"),
+        ("muted", "静音"),
+        ("web_clients", "网页客户端"),
+        ("connected", "已连接"),
+        ("input_level", "输入电平"),
+        ("audio_metrics", "音频指标"),
+        ("metric", "指标"),
+        ("bitrate", "位速率"),
+        ("sample_rate", "采样率"),
+        ("latency", "总延迟"),
+        ("network_latency", "网络延迟"),
+        ("jitter", "抖动"),
+        ("packet_loss", "丢包率"),
+        ("buffer", "缓冲"),
+        ("audio_params_title", "音频参数（Enter 开关，-/+ 调增益与缓冲）"),
+        ("gain", "增益"),
+        ("aec", "回声消除"),
+        ("noise_reduction", "降噪"),
+        ("dereverb", "去混响"),
+        ("agc", "AGC"),
+        ("vad", "VAD"),
+        ("output_buffer", "输出缓冲"),
+        ("chain_title", "处理链路（↑↓ 选，+/- 移，AEC 恒居首）"),
+        ("pinned", "固定"),
+        ("logs", "日志"),
+        ("help", "q 退  Tab 切  ↑↓ 选  Enter 开关  -/+ 调"),
+        ("quit_hint", "按 q 或 Ctrl+C 退"),
+        ("tab_switch", "Tab 切"),
+        ("nav", "选"),
+        ("toggle", "开关"),
+        ("adjust", "调"),
+        ("mode", "模式"),
+        ("spectrum", "频谱"),
+        ("enabled", "开"),
+        ("disabled", "关"),
+        ("ms", "毫秒"),
+        ("kbps", "kbps"),
+        ("percent", "%"),
+        ("none", "-"),
+        ("mode_wifi", "WiFi 模式"),
+        ("mode_usb", "USB 模式"),
+        ("mode_web", "Web 模式"),
+        ("mode_unknown", "未知模式"),
+        ("network", "网络"),
+        ("local_ips", "本机 IP"),
+        ("server_addr_hint", "手机端连接地址"),
+        ("staged_hint", "改模式/端口后需重启"),
+        ("level_overflow", "电平过高"),
+    ],
+};
+
+const ZH_HK: Dict = Dict {
+    entries: &[
+        ("app_title", "CLI 模式"),
+        ("tab_dashboard", "儀錶盤"),
+        ("tab_audio", "音訊參數"),
+        ("tab_chain", "處理鏈路"),
+        ("tab_logs", "日誌"),
+        ("state", "狀態"),
+        ("server_running", "伺服器: 運行中"),
+        ("server_stopped", "伺服器: 已停止"),
+        ("listening", "監聽"),
+        ("port", "埠"),
+        ("device", "裝置"),
+        ("device_not_connected", "未連接 - 喺手機開 MicYou 再連接"),
+        ("muted", "靜音"),
+        ("web_clients", "網頁用戶端"),
+        ("connected", "已連接"),
+        ("input_level", "輸入電平"),
+        ("audio_metrics", "音訊指標"),
+        ("metric", "指標"),
+        ("bitrate", "位速率"),
+        ("sample_rate", "取樣率"),
+        ("latency", "總延遲"),
+        ("network_latency", "網路延遲"),
+        ("jitter", "抖動"),
+        ("packet_loss", "丟包率"),
+        ("buffer", "緩衝"),
+        ("audio_params_title", "音訊參數（Enter 開關，-/+ 調整增益同緩衝）"),
+        ("gain", "增益"),
+        ("aec", "迴聲消除"),
+        ("noise_reduction", "降噪"),
+        ("dereverb", "去混響"),
+        ("agc", "AGC"),
+        ("vad", "VAD"),
+        ("output_buffer", "輸出緩衝區"),
+        ("chain_title", "處理鏈路（↑↓ 揀，+/- 郁位，AEC 固定首位）"),
+        ("pinned", "固定"),
+        ("logs", "日誌"),
+        ("help", "q 離開  Tab 切換  ↑↓ 揀  Enter 開關  -/+ 調整"),
+        ("quit_hint", "撳 q 或 Ctrl+C 離開"),
+        ("tab_switch", "Tab 切換"),
+        ("nav", "揀"),
+        ("toggle", "開關"),
+        ("adjust", "調整"),
+        ("mode", "模式"),
+        ("spectrum", "頻譜"),
+        ("enabled", "開"),
+        ("disabled", "關"),
+        ("ms", "毫秒"),
+        ("kbps", "kbps"),
+        ("percent", "%"),
+        ("none", "-"),
+        ("mode_wifi", "WiFi 模式"),
+        ("mode_usb", "USB 模式"),
+        ("mode_web", "Web 模式"),
+        ("mode_unknown", "未知模式"),
+        ("network", "網路"),
+        ("local_ips", "本機 IP"),
+        ("server_addr_hint", "手機端連接地址"),
+        ("staged_hint", "改模式/埠之後要重啟先得"),
+        ("level_overflow", "電平過高"),
+    ],
+};
+
+const ZH_SS: Dict = Dict {
+    entries: &[
+        ("app_title", "CLI 模式"),
+        ("tab_dashboard", "仪表盘项"),
+        ("tab_audio", "音频参数项"),
+        ("tab_chain", "处理链路项"),
+        ("tab_logs", "日志项"),
+        ("state", "状态"),
+        ("server_running", "服务器: 运行中"),
+        ("server_stopped", "服务器: 已停止"),
+        ("listening", "监听"),
+        ("port", "端口"),
+        ("device", "设备"),
+        ("device_not_connected", "未连接 - 在手机上打开 MicYou 并连接"),
+        ("muted", "静音"),
+        ("web_clients", "网页客户端"),
+        ("connected", "已连接"),
+        ("input_level", "输入电平"),
+        ("audio_metrics", "音频指标"),
+        ("metric", "指标"),
+        ("bitrate", "位速率"),
+        ("sample_rate", "采样率"),
+        ("latency", "总延迟"),
+        ("network_latency", "网络延迟"),
+        ("jitter", "抖动"),
+        ("packet_loss", "丢包率"),
+        ("buffer", "缓冲"),
+        ("audio_params_title", "音频参数（Enter 开关，-/+ 调整增益与缓冲）"),
+        ("gain", "增益"),
+        ("aec", "回声消除"),
+        ("noise_reduction", "降噪"),
+        ("dereverb", "去混响"),
+        ("agc", "AGC"),
+        ("vad", "VAD"),
+        ("output_buffer", "输出缓冲区"),
+        ("chain_title", "处理链路（↑↓ 选择，+/- 上下移动，AEC 固定首位）"),
+        ("pinned", "固定"),
+        ("logs", "日志"),
+        ("help", "q 退出  Tab 切换  ↑↓ 选择  Enter 开关  -/+ 调整"),
+        ("quit_hint", "按 q 或 Ctrl+C 退出"),
+        ("tab_switch", "Tab 切换"),
+        ("nav", "选择"),
+        ("toggle", "开关"),
+        ("adjust", "调整"),
+        ("mode", "模式"),
+        ("spectrum", "频谱"),
+        ("enabled", "开"),
+        ("disabled", "关"),
+        ("ms", "毫秒"),
+        ("kbps", "kbps"),
+        ("percent", "%"),
+        ("none", "-"),
+        ("mode_wifi", "WiFi 模式"),
+        ("mode_usb", "USB 模式"),
+        ("mode_web", "Web 模式"),
+        ("mode_unknown", "未知模式"),
+        ("network", "网络"),
+        ("local_ips", "本机 IP"),
+        ("server_addr_hint", "手机端连接地址"),
+        ("staged_hint", "更改模式/端口后需重启生效"),
+        ("level_overflow", "电平过高"),
+    ],
+};
+
+const ZH_TW: Dict = Dict {
+    entries: &[
+        ("app_title", "CLI 模式"),
+        ("tab_dashboard", "儀表板"),
+        ("tab_audio", "音訊參數"),
+        ("tab_chain", "處理鏈路"),
+        ("tab_logs", "日誌"),
+        ("state", "狀態"),
+        ("server_running", "伺服器: 執行中"),
+        ("server_stopped", "伺服器: 已停止"),
+        ("listening", "監聽"),
+        ("port", "連接埠"),
+        ("device", "裝置"),
+        ("device_not_connected", "未連線 - 在手機上開啟 MicYou 並連線"),
+        ("muted", "靜音"),
+        ("web_clients", "網頁用戶端"),
+        ("connected", "已連線"),
+        ("input_level", "輸入電平"),
+        ("audio_metrics", "音訊指標"),
+        ("metric", "指標"),
+        ("bitrate", "位元速率"),
+        ("sample_rate", "取樣率"),
+        ("latency", "總延遲"),
+        ("network_latency", "網路延遲"),
+        ("jitter", "抖動"),
+        ("packet_loss", "封包遺失率"),
+        ("buffer", "緩衝"),
+        ("audio_params_title", "音訊參數（Enter 開關，-/+ 調整增益與緩衝）"),
+        ("gain", "增益"),
+        ("aec", "迴聲消除"),
+        ("noise_reduction", "降噪"),
+        ("dereverb", "去殘響"),
+        ("agc", "AGC"),
+        ("vad", "VAD"),
+        ("output_buffer", "輸出緩衝區"),
+        ("chain_title", "處理鏈路（↑↓ 選取，+/- 移動，AEC 固定首位）"),
+        ("pinned", "固定"),
+        ("logs", "日誌"),
+        ("help", "q 結束  Tab 切換  ↑↓ 選取  Enter 開關  -/+ 調整"),
+        ("quit_hint", "按 q 或 Ctrl+C 結束"),
+        ("tab_switch", "Tab 切換"),
+        ("nav", "選取"),
+        ("toggle", "開關"),
+        ("adjust", "調整"),
+        ("mode", "模式"),
+        ("spectrum", "頻譜"),
+        ("enabled", "開"),
+        ("disabled", "關"),
+        ("ms", "毫秒"),
+        ("kbps", "kbps"),
+        ("percent", "%"),
+        ("none", "-"),
+        ("mode_wifi", "WiFi 模式"),
+        ("mode_usb", "USB 模式"),
+        ("mode_web", "Web 模式"),
+        ("mode_unknown", "未知模式"),
+        ("network", "網路"),
+        ("local_ips", "本機 IP"),
+        ("server_addr_hint", "手機端連線位址"),
+        ("staged_hint", "變更模式/連接埠後需重新啟動"),
+        ("level_overflow", "電平過高"),
+    ],
+};
+
+fn dict_for(lang: &str) -> &'static Dict {
+    match lang {
+        "en" => &EN,
+        "cat" => &CAT,
+        "lzh" => &LZH,
+        "zh-hk" => &ZH_HK,
+        "zh-ss" => &ZH_SS,
+        "zh-tw" => &ZH_TW,
+        _ => &ZH,
+    }
+}
+
+/// Look up a translation; falls back to zh, then to the key itself.
+pub fn tr(lang: &str, key: &str) -> String {
+    let dict = dict_for(lang);
+    for (k, v) in dict.entries {
+        if *k == key {
+            return (*v).to_string();
+        }
+    }
+    let zh = dict_for("zh");
+    for (k, v) in zh.entries {
+        if *k == key {
+            return (*v).to_string();
+        }
+    }
+    key.to_string()
+}

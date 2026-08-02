@@ -34,7 +34,11 @@ pub fn data_dir() -> PathBuf {
             .ok()
             .filter(|p| !p.is_empty())
             .map(PathBuf::from)
-            .or_else(|| std::env::var("HOME").ok().map(|h| PathBuf::from(h).join(".local/share")))
+            .or_else(|| {
+                std::env::var("HOME")
+                    .ok()
+                    .map(|h| PathBuf::from(h).join(".local/share"))
+            })
             .unwrap_or_else(|| PathBuf::from("."))
             .join("micyou")
     }
@@ -87,7 +91,8 @@ pub fn read_lock() -> Option<ModeLock> {
 /// helpful message when another live process owns the lock.
 pub fn acquire(mode: RunMode) -> Result<(), String> {
     let dir = data_dir();
-    fs::create_dir_all(&dir).map_err(|e| format!("cannot create data dir {}: {e}", dir.display()))?;
+    fs::create_dir_all(&dir)
+        .map_err(|e| format!("cannot create data dir {}: {e}", dir.display()))?;
 
     if let Some(existing) = read_lock() {
         if existing.mode == mode && existing.pid == std::process::id() {

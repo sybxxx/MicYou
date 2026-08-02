@@ -60,11 +60,24 @@ pub fn update_audio_settings(
     }
     match state.dsp_settings.write() {
         Ok(mut current) => {
-            *current = settings;
+            *current = settings.clone();
+            // Persist to the shared settings.json so the CLI sees the same values
+            crate::app_config::save_dsp_settings(&settings)
+                .map_err(|e| format!("Failed to persist settings: {e}"))?;
             Ok("Settings updated".to_string())
         }
         Err(e) => Err(format!("Failed to update settings: {}", e)),
     }
+}
+
+/// Current DSP settings (loaded from settings.json at startup, updated at runtime).
+#[tauri::command]
+pub fn get_audio_settings(state: State<'_, ServerState>) -> Result<AudioDspSettings, String> {
+    state
+        .dsp_settings
+        .read()
+        .map(|s| s.clone())
+        .map_err(|e| format!("Failed to read settings: {}", e))
 }
 
 #[tauri::command]
