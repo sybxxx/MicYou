@@ -1,137 +1,112 @@
-import { watchEffect } from "vue";
-import { useStorage } from "@vueuse/core";
-import { invoke } from "@tauri-apps/api/core";
+import { watchEffect } from 'vue';
+import { useStorage } from '@vueuse/core';
+import { invoke } from '@tauri-apps/api/core';
 
 // Represents an HSL color configuration
 export interface HslColor {
-	h: number;
-	s: number;
-	l: number;
+  h: number;
+  s: number;
+  l: number;
 }
 
 // Built-in theme presets mapped by color key
 const BUILTIN_THEMES: Record<string, HslColor> = {
-	"theme-blue": { h: 215, s: 35, l: 55 },
-	"theme-green": { h: 150, s: 30, l: 50 },
-	"theme-rose": { h: 350, s: 40, l: 60 },
-	"theme-purple": { h: 270, s: 30, l: 60 },
-	"theme-orange": { h: 25, s: 40, l: 55 },
-	"theme-amber": { h: 40, s: 40, l: 50 },
-	"theme-teal": { h: 175, s: 30, l: 45 },
-	"theme-cyan": { h: 190, s: 40, l: 45 },
+  'theme-blue': { h: 215, s: 35, l: 55 },
+  'theme-green': { h: 150, s: 30, l: 50 },
+  'theme-rose': { h: 350, s: 40, l: 60 },
+  'theme-purple': { h: 270, s: 30, l: 60 },
+  'theme-orange': { h: 25, s: 40, l: 55 },
+  'theme-amber': { h: 40, s: 40, l: 50 },
+  'theme-teal': { h: 175, s: 30, l: 45 },
+  'theme-cyan': { h: 190, s: 40, l: 45 },
 };
 
 /**
  * Dynamically generates a CSS block containing Material 3 compatible HSL color tokens.
  * Computes primary, secondary, tertiary, background, surface, and outline colors based on
  * the selected base HSL color, active variant style, and dark mode state.
- *
+ * 
  * @param baseH Base Hue (0 - 360)
  * @param baseS Base Saturation (0 - 100)
  * @param baseL Base Lightness (0 - 100)
  * @param variant Dynamic palette variant (e.g. Vibrant, Expressive, Monochrome)
  * @param isDark True for dark mode theme generation
  */
-function generateThemeCSS(
-	baseH: number,
-	baseS: number,
-	baseL: number,
-	variant: string,
-	isDark: boolean,
-): string {
-	let priH = baseH,
-		priS = baseS,
-		priL = baseL;
-	let secH = baseH,
-		secS = 20,
-		secL = isDark ? 16 : 90;
-	let terH = baseH,
-		terS = 20,
-		terL = isDark ? 16 : 90;
-	let bgH = baseH,
-		bgS = 15,
-		bgL = isDark ? 8 : 96;
-	let surH = baseH,
-		surS = 15,
-		surL = isDark ? 10 : 98;
+function generateThemeCSS(baseH: number, baseS: number, baseL: number, variant: string, isDark: boolean): string {
+  let priH = baseH, priS = baseS, priL = baseL;
+  let secH = baseH, secS = 20, secL = isDark ? 16 : 90;
+  let terH = baseH, terS = 20, terL = isDark ? 16 : 90;
+  let bgH = baseH, bgS = 15, bgL = isDark ? 8 : 96;
+  let surH = baseH, surS = 15, surL = isDark ? 10 : 98;
+  
+  // Calculate variant-specific saturation and hue transformations
+  switch (variant) {
+    case 'Neutral':
+      priS = Math.max(0, baseS - 15);
+      secS = 10; terS = 10;
+      bgS = 5; surS = 5;
+      break;
+    case 'Vibrant':
+      priS = Math.min(100, baseS + 20);
+      secS = 30; terS = 35;
+      bgS = 25; surS = 25;
+      break;
+    case 'Expressive':
+      secH = (baseH + 45) % 360;
+      terH = (baseH + 90) % 360;
+      surS = 20;
+      break;
+    case 'Rainbow':
+      secH = (baseH + 120) % 360;
+      terH = (baseH + 240) % 360;
+      secS = 35; terS = 35;
+      break;
+    case 'FruitSalad':
+      secH = (baseH + 60) % 360;
+      terH = (baseH + 150) % 360;
+      priS = Math.min(100, baseS + 10);
+      secS = 30; terS = 30;
+      break;
+    case 'Monochrome':
+      priS = 0; secS = 0; terS = 0;
+      bgS = 0; surS = 0;
+      break;
+    case 'Fidelity':
+      secS = Math.max(0, baseS - 10);
+      terS = Math.max(0, baseS - 15);
+      surS = Math.max(0, baseS - 20);
+      bgS = Math.max(0, baseS - 25);
+      break;
+    case 'Content':
+      secS = Math.max(0, baseS - 5);
+      terS = Math.max(0, baseS - 10);
+      surS = Math.max(0, baseS - 15);
+      bgS = Math.max(0, baseS - 20);
+      break;
+    case 'TonalSpot':
+    default:
+      // Keep defaults as is
+      break;
+  }
 
-	// Calculate variant-specific saturation and hue transformations
-	switch (variant) {
-		case "Neutral":
-			priS = Math.max(0, baseS - 15);
-			secS = 10;
-			terS = 10;
-			bgS = 5;
-			surS = 5;
-			break;
-		case "Vibrant":
-			priS = Math.min(100, baseS + 20);
-			secS = 30;
-			terS = 35;
-			bgS = 25;
-			surS = 25;
-			break;
-		case "Expressive":
-			secH = (baseH + 45) % 360;
-			terH = (baseH + 90) % 360;
-			surS = 20;
-			break;
-		case "Rainbow":
-			secH = (baseH + 120) % 360;
-			terH = (baseH + 240) % 360;
-			secS = 35;
-			terS = 35;
-			break;
-		case "FruitSalad":
-			secH = (baseH + 60) % 360;
-			terH = (baseH + 150) % 360;
-			priS = Math.min(100, baseS + 10);
-			secS = 30;
-			terS = 30;
-			break;
-		case "Monochrome":
-			priS = 0;
-			secS = 0;
-			terS = 0;
-			bgS = 0;
-			surS = 0;
-			break;
-		case "Fidelity":
-			secS = Math.max(0, baseS - 10);
-			terS = Math.max(0, baseS - 15);
-			surS = Math.max(0, baseS - 20);
-			bgS = Math.max(0, baseS - 25);
-			break;
-		case "Content":
-			secS = Math.max(0, baseS - 5);
-			terS = Math.max(0, baseS - 10);
-			surS = Math.max(0, baseS - 15);
-			bgS = Math.max(0, baseS - 20);
-			break;
-		case "TonalSpot":
-		default:
-			// Keep defaults as is
-			break;
-	}
+  // Calculate lightness tokens based on target dark/light theme setting
+  const fgL = isDark ? 85 : 25;
+  const onPriL = isDark ? 20 : 92;
+  const priContL = isDark ? 25 : 85;
+  const onPriContL = isDark ? 85 : 25;
 
-	// Calculate lightness tokens based on target dark/light theme setting
-	const fgL = isDark ? 85 : 25;
-	const onPriL = isDark ? 20 : 92;
-	const priContL = isDark ? 25 : 85;
-	const onPriContL = isDark ? 85 : 25;
+  const onSecL = isDark ? 85 : 25;
+  const secContL = isDark ? 16 : 90;
+  const onSecContL = isDark ? 85 : 25;
 
-	const onSecL = isDark ? 85 : 25;
-	const secContL = isDark ? 16 : 90;
-	const onSecContL = isDark ? 85 : 25;
+  const surBrightL = isDark ? 14 : 98;
+  const surContL = isDark ? 16 : 92;
+  const surContLowL = isDark ? 12 : 94;
+  const surVarL = isDark ? 22 : 88;
+  const onSurVarL = isDark ? 60 : 45;
+  const outlineL = isDark ? 20 : 80;
 
-	const surBrightL = isDark ? 14 : 98;
-	const surContL = isDark ? 16 : 92;
-	const surContLowL = isDark ? 12 : 94;
-	const surVarL = isDark ? 22 : 88;
-	const onSurVarL = isDark ? 60 : 45;
-	const outlineL = isDark ? 20 : 80;
-
-	return `
+  return `
     --background: ${bgH} ${bgS}% ${bgL}%;
     --foreground: ${surH} ${surS}% ${fgL}%;
     --surface: ${surH} ${surS}% ${surL}%;
@@ -167,84 +142,54 @@ function generateThemeCSS(
  * Listens to configuration changes and applies class tags and dynamic custom CSS styles to document root.
  */
 export function useTheme() {
-	const themeColor = useStorage<string>("micyou_theme_color", "theme-blue");
-	const uiStyle = useStorage<string>("micyou_ui_style", "style-default");
-	const customH = useStorage<number>("micyou_custom_h", 215);
-	const customS = useStorage<number>("micyou_custom_s", 35);
-	const customL = useStorage<number>("micyou_custom_l", 55);
-	const customVariant = useStorage<string>(
-		"micyou_custom_variant",
-		"TonalSpot",
-	);
-	const customCss = useStorage<string>("micyou_custom_css", "");
+  const themeColor = useStorage<string>('micyou_theme_color', 'theme-blue');
+  const uiStyle = useStorage<string>('micyou_ui_style', 'style-default');
+  const customH = useStorage<number>('micyou_custom_h', 215);
+  const customS = useStorage<number>('micyou_custom_s', 35);
+  const customL = useStorage<number>('micyou_custom_l', 55);
+  const customVariant = useStorage<string>('micyou_custom_variant', 'TonalSpot');
+  const customCss = useStorage<string>('micyou_custom_css', '');
 
-	// Applies user custom CSS injector rules
-	watchEffect(() => {
-		if (typeof document !== "undefined") {
-			let userStyle = document.getElementById("micyou-user-custom-css");
-			if (!userStyle) {
-				userStyle = document.createElement("style");
-				userStyle.id = "micyou-user-custom-css";
-				document.head.appendChild(userStyle);
-			}
-			userStyle.innerHTML = customCss.value || "";
-		}
-	});
+  // Applies user custom CSS injector rules
+  watchEffect(() => {
+    if (typeof document !== 'undefined') {
+      let userStyle = document.getElementById('micyou-user-custom-css');
+      if (!userStyle) {
+        userStyle = document.createElement('style');
+        userStyle.id = 'micyou-user-custom-css';
+        document.head.appendChild(userStyle);
+      }
+      userStyle.innerHTML = customCss.value || '';
+    }
+  });
 
-	// Generates and injects the dynamic theme CSS palette
-	watchEffect(() => {
-		if (typeof document !== "undefined") {
-			const themes = [
-				"theme-blue",
-				"theme-green",
-				"theme-rose",
-				"theme-purple",
-				"theme-orange",
-				"theme-amber",
-				"theme-teal",
-				"theme-cyan",
-				"theme-custom",
-			];
-			document.documentElement.classList.remove(
-				...themes,
-				"style-default",
-				"style-glass",
-			);
+  // Generates and injects the dynamic theme CSS palette
+  watchEffect(() => {
+    if (typeof document !== 'undefined') {
+      const themes = ['theme-blue', 'theme-green', 'theme-rose', 'theme-purple', 'theme-orange', 'theme-amber', 'theme-teal', 'theme-cyan', 'theme-custom'];
+      document.documentElement.classList.remove(...themes, 'style-default', 'style-glass');
 
-			if (themeColor.value)
-				document.documentElement.classList.add(themeColor.value);
-			if (uiStyle.value) {
-				document.documentElement.classList.add(uiStyle.value);
-			}
+      if (themeColor.value) document.documentElement.classList.add(themeColor.value);
+      if (uiStyle.value) {
+        document.documentElement.classList.add(uiStyle.value);
+      }
 
-			let dynamicStyle = document.getElementById("micyou-custom-theme");
-			if (!dynamicStyle) {
-				dynamicStyle = document.createElement("style");
-				dynamicStyle.id = "micyou-custom-theme";
-				document.head.appendChild(dynamicStyle);
-			}
+      let dynamicStyle = document.getElementById('micyou-custom-theme');
+      if (!dynamicStyle) {
+        dynamicStyle = document.createElement('style');
+        dynamicStyle.id = 'micyou-custom-theme';
+        document.head.appendChild(dynamicStyle);
+      }
 
-			let baseColor = BUILTIN_THEMES[themeColor.value];
-			if (!baseColor) {
-				baseColor = { h: customH.value, s: customS.value, l: customL.value };
-			}
+      let baseColor = BUILTIN_THEMES[themeColor.value];
+      if (!baseColor) {
+        baseColor = { h: customH.value, s: customS.value, l: customL.value };
+      }
 
-			const lightCSS = generateThemeCSS(
-				baseColor.h,
-				baseColor.s,
-				baseColor.l,
-				customVariant.value,
-				false,
-			);
-			const darkCSS = generateThemeCSS(
-				baseColor.h,
-				baseColor.s,
-				baseColor.l,
-				customVariant.value,
-				true,
-			);
+      const lightCSS = generateThemeCSS(baseColor.h, baseColor.s, baseColor.l, customVariant.value, false);
+      const darkCSS = generateThemeCSS(baseColor.h, baseColor.s, baseColor.l, customVariant.value, true);
 
-			dynamicStyle.innerHTML = `
+      dynamicStyle.innerHTML = `
         :root, :root[class] {
           ${lightCSS}
         }
@@ -253,20 +198,20 @@ export function useTheme() {
         }
       `;
 
-			// Export the active theme colors for the CLI TUI (theme.json)
-			exportThemeToCli();
-		}
-	});
+      // Export the active theme colors for the CLI TUI (theme.json)
+      exportThemeToCli();
+    }
+  });
 
-	return {
-		themeColor,
-		uiStyle,
-		customH,
-		customS,
-		customL,
-		customVariant,
-		customCss,
-	};
+  return {
+    themeColor,
+    uiStyle,
+    customH,
+    customS,
+    customL,
+    customVariant,
+    customCss,
+  };
 }
 
 /**
@@ -274,44 +219,41 @@ export function useTheme() {
  * CLI TUI can match the GUI theme exactly.
  */
 function exportThemeToCli() {
-	if (
-		typeof document === "undefined" ||
-		typeof getComputedStyle === "undefined"
-	)
-		return;
-	try {
-		const read = (name: string): string => {
-			const raw = getComputedStyle(document.documentElement)
-				.getPropertyValue(name)
-				.trim();
-			const parts = raw.split(/\s+/).map((p) => parseFloat(p));
-			if (parts.length < 3 || parts.some(Number.isNaN)) return "";
-			return hslToHex(parts[0], parts[1], parts[2]);
-		};
-		void invoke("save_theme_colors", {
-			primary: read("--primary") || "#8d8768",
-			secondary: read("--secondary") || "#8d8768",
-			tertiary: read("--tertiary") || "#8d8768",
-			surface: read("--surface") || "#1e1d1a",
-			surfaceVariant: read("--surface-variant") || "#2a2824",
-			onSurface: read("--on-surface") || "#e7e6e4",
-			error: read("--error") || "#d17a7a",
-		});
-	} catch (e) {
-		console.error("export theme colors failed:", e);
-	}
+  if (typeof document === 'undefined' || typeof getComputedStyle === 'undefined') return;
+  try {
+    const read = (name: string): string => {
+      const raw = getComputedStyle(document.documentElement)
+        .getPropertyValue(name)
+        .trim();
+      const parts = raw.split(/\s+/).map((p) => parseFloat(p));
+      if (parts.length < 3 || parts.some(Number.isNaN)) return '';
+      return hslToHex(parts[0], parts[1], parts[2]);
+    };
+    void invoke('save_theme_colors', {
+      primary: read('--primary') || '#8d8768',
+      secondary: read('--secondary') || '#8d8768',
+      tertiary: read('--tertiary') || '#8d8768',
+      surface: read('--surface') || '#1e1d1a',
+      surfaceVariant: read('--surface-variant') || '#2a2824',
+      onSurface: read('--on-surface') || '#e7e6e4',
+      error: read('--error') || '#d17a7a',
+    });
+  } catch (e) {
+    console.error('export theme colors failed:', e);
+  }
 }
 
 function hslToHex(h: number, s: number, l: number): string {
-	const sn = s / 100;
-	const ln = l / 100;
-	const k = (n: number) => (n + h / 30) % 12;
-	const a = sn * Math.min(ln, 1 - ln);
-	const f = (n: number) =>
-		ln - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1)));
-	const toHex = (v: number) =>
-		Math.round(255 * v)
-			.toString(16)
-			.padStart(2, "0");
-	return `#${toHex(f(0))}${toHex(f(8))}${toHex(f(4))}`;
+  const sn = s / 100;
+  const ln = l / 100;
+  const k = (n: number) => (n + h / 30) % 12;
+  const a = sn * Math.min(ln, 1 - ln);
+  const f = (n: number) =>
+    ln - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1)));
+  const toHex = (v: number) =>
+    Math.round(255 * v)
+      .toString(16)
+      .padStart(2, '0');
+  return `#${toHex(f(0))}${toHex(f(8))}${toHex(f(4))}`;
 }
+

@@ -176,42 +176,19 @@ impl TuiApp {
         }
 
         let footer = Line::from(vec![
-            Span::styled(
-                " q ",
-                Style::default().fg(Color::Black).bg(theme.error.to_color()),
-            ),
+            Span::styled(" q ", Style::default().fg(Color::Black).bg(theme.error.to_color())),
             Span::raw(self.t("quit_hint")),
             Span::raw("  "),
-            Span::styled(
-                " Tab ",
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(theme.secondary.to_color()),
-            ),
+            Span::styled(" Tab ", Style::default().fg(Color::Black).bg(theme.secondary.to_color())),
             Span::raw(self.t("tab_switch")),
             Span::raw("  "),
-            Span::styled(
-                " ↑↓ ",
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(theme.secondary.to_color()),
-            ),
+            Span::styled(" ↑↓ ", Style::default().fg(Color::Black).bg(theme.secondary.to_color())),
             Span::raw(self.t("nav")),
             Span::raw("  "),
-            Span::styled(
-                " Enter ",
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(theme.primary.to_color()),
-            ),
+            Span::styled(" Enter ", Style::default().fg(Color::Black).bg(theme.primary.to_color())),
             Span::raw(self.t("toggle")),
             Span::raw("  "),
-            Span::styled(
-                " -/+ ",
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(theme.primary.to_color()),
-            ),
+            Span::styled(" -/+ ", Style::default().fg(Color::Black).bg(theme.primary.to_color())),
             Span::raw(self.t("adjust")),
             Span::raw("  "),
             Span::raw(&self.last_event),
@@ -252,10 +229,7 @@ impl TuiApp {
             ])),
             ListItem::new(Line::from(vec![
                 Span::raw(format!("{}: ", self.t("mode"))),
-                Span::styled(
-                    self.mode_label(),
-                    Style::default().fg(theme.tertiary.to_color()),
-                ),
+                Span::styled(self.mode_label(), Style::default().fg(theme.tertiary.to_color())),
                 Span::raw(format!("  {}: ", self.t("listening"))),
                 Span::styled(
                     format!("{} {}", self.t("port"), self.port),
@@ -316,11 +290,8 @@ impl TuiApp {
             ])));
         }
 
-        let left = List::new(left_items).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(self.t("state")),
-        );
+        let left = List::new(left_items)
+            .block(Block::default().borders(Borders::ALL).title(self.t("state")));
         frame.render_widget(left, left_col[0]);
 
         // Cava-style spectrum
@@ -365,18 +336,11 @@ impl TuiApp {
             rows[4] = format!("{}:   {} ms", self.t("latency"), m.latency_ms);
             rows[5] = format!("{}: {} ms", self.t("network_latency"), m.network_latency_ms);
             rows[6] = format!("{}:     {:.1} ms", self.t("jitter"), m.jitter_ms);
-            rows[7] = format!(
-                "{}:   {:.2}%",
-                self.t("packet_loss"),
-                m.packet_loss_rate * 100.0
-            );
+            rows[7] = format!("{}:   {:.2}%", self.t("packet_loss"), m.packet_loss_rate * 100.0);
             rows[8] = format!("{}:     {} ms", self.t("buffer"), m.buffer_duration_ms);
         }
-        let right = List::new(rows).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(self.t("audio_metrics")),
-        );
+        let right = List::new(rows)
+            .block(Block::default().borders(Borders::ALL).title(self.t("audio_metrics")));
         frame.render_widget(right, right_col[1]);
 
         let _ = state;
@@ -409,11 +373,12 @@ impl TuiApp {
             for v in &bands {
                 text.push(if *v >= threshold { '█' } else { ' ' });
             }
-            lines.push(Line::from(Span::styled(text, Style::default().fg(color))));
+            lines.push(Line::from(Span::styled(
+                text,
+                Style::default().fg(color),
+            )));
         }
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .title(self.t("spectrum"));
+        let block = Block::default().borders(Borders::ALL).title(self.t("spectrum"));
         frame.render_widget(Paragraph::new(lines).block(block), area);
     }
 
@@ -529,8 +494,8 @@ impl TuiApp {
             .take(20)
             .map(|l| ListItem::new(l.clone()))
             .collect();
-        let list =
-            List::new(items).block(Block::default().borders(Borders::ALL).title(self.t("logs")));
+        let list = List::new(items)
+            .block(Block::default().borders(Borders::ALL).title(self.t("logs")));
         frame.render_widget(list, area);
     }
 }
