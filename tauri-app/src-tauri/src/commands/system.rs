@@ -1,5 +1,5 @@
 use tauri::window::Effect;
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Manager, State};
 use tokio_util::sync::CancellationToken;
 
 use crate::audio_stream::{validate_audio_packet, AudioStreamEvent, ExpectedAudioSession};
@@ -84,6 +84,21 @@ pub async fn start_server(
     bind_address: Option<String>,
     output_device: Option<String>,
 ) -> Result<String, String> {
+    let events: crate::events::SharedEvents =
+        std::sync::Arc::new(crate::events::TauriEventSink(app_handle));
+    start_server_inner(&state, port, mode, bind_address, output_device, events).await
+}
+
+/// Core server startup, independent of the Tauri runtime.
+/// Shared by the GUI (tauri command wrapper) and the CLI (`micyou serve`).
+pub async fn start_server_inner(
+    state: &ServerState,
+    port: u16,
+    mode: String,
+    bind_address: Option<String>,
+    output_device: Option<String>,
+    events: crate::events::SharedEvents,
+) -> Result<String, String> {
     let udp_port = validate_server_port(port, &mode)?;
 
     let _lifecycle_guard = state.lifecycle_gate.enter().await;
@@ -141,7 +156,7 @@ pub async fn start_server(
     let (audio_tx, mut audio_rx) = tokio::sync::mpsc::channel(128);
 
     // Start audio output pipeline (shared by all modes)
-    let app_handle_audio = app_handle.clone();
+    let events_audio = events.clone();
     let is_web_mode = mode == "web";
     let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
 
@@ -318,21 +333,13 @@ pub async fn start_server(
                         frame_counter = frame_counter.wrapping_add(1);
                         if frame_counter.is_multiple_of(6) {
                             let level = (processed_rms * 500.0).min(100.0) as u32;
-                            if let Some(main_window) = app_handle_audio.get_webview_window("main") {
-                                let _ = main_window.emit("audio-level", level);
+                            events_audio.audio_level(level);
 
-                                if spectrum_streaming_enabled
-                                    .load(std::sync::atomic::Ordering::Acquire)
-                                {
-                                    let (raw_spec, proc_spec) = dsp_processor.get_spectrums();
-                                    let _ = main_window.emit(
-                                        "audio-spectrum",
-                                        SpectrumPayload {
-                                            raw: raw_spec,
-                                            processed: proc_spec,
-                                        },
-                                    );
-                                }
+                            if spectrum_streaming_enabled
+                                .load(std::sync::atomic::Ordering::Acquire)
+                            {
+                                let (raw_spec, proc_spec) = dsp_processor.get_spectrums();
+                                events_audio.audio_spectrum(raw_spec, proc_spec);
                             }
                         }
                     }
@@ -349,7 +356,7 @@ pub async fn start_server(
         .await
         .map_err(|error| format!("Failed to start audio output: {}", error));
     if let Err(error) = audio_ready {
-        let rollback = rollback_start(&state, &cancel_token, Vec::new()).await;
+        let rollback = rollback_start(state, &cancel_token, Vec::new()).await;
         return Err(match rollback {
             Ok(()) => error,
             Err(cleanup) => format!("{}; {}", error, cleanup),
@@ -366,11 +373,11 @@ pub async fn start_server(
             tokio::sync::mpsc::channel::<(u64, micyou_protocol::micyou::AudioPacketMessage)>(128);
 
         if let Err(e) = web_server_instance
-            .start(web_port, app_handle.clone(), web_audio_tx)
+            .start(web_port, events.clone(), web_audio_tx)
             .await
         {
             let error = format!("Failed to start web server: {}", e);
-            let rollback = rollback_start(&state, &cancel_token, Vec::new()).await;
+            let rollback = rollback_start(state, &cancel_token, Vec::new()).await;
             return Err(match rollback {
                 Ok(()) => error,
                 Err(cleanup) => format!("{}; {}", error, cleanup),
@@ -448,7 +455,7 @@ pub async fn start_server(
         });
     }
 
-    let app_handle_tcp = app_handle.clone();
+    let events_tcp = events.clone();
     let token_tcp = cancel_token.clone();
     let port_tcp = port;
     let audio_tx_tcp = audio_tx.clone();
@@ -461,7 +468,7 @@ pub async fn start_server(
     let (tcp_ready_tx, tcp_ready_rx) = tokio::sync::oneshot::channel();
     let tcp_task = tokio::spawn(async move {
         if let Err(e) = crate::tcp_server::start_tcp_server(
-            app_handle_tcp,
+            events_tcp,
             port_tcp,
             bind_addr_tcp,
             token_tcp,
@@ -507,7 +514,7 @@ pub async fn start_server(
     );
     if let Err(error) = tcp_ready.and(udp_ready) {
         let error = format!("Failed to start network server: {}", error);
-        let rollback = rollback_start(&state, &cancel_token, vec![tcp_task, udp_task]).await;
+        let rollback = rollback_start(state, &cancel_token, vec![tcp_task, udp_task]).await;
         return Err(match rollback {
             Ok(()) => error,
             Err(cleanup) => format!("{}; {}", error, cleanup),
@@ -525,6 +532,16 @@ pub async fn start_server(
 
 #[tauri::command]
 pub async fn stop_server(app: AppHandle, state: State<'_, ServerState>) -> Result<String, String> {
+    let events: crate::events::SharedEvents =
+        std::sync::Arc::new(crate::events::TauriEventSink(app));
+    stop_server_inner(&state, events).await
+}
+
+/// Core server shutdown, independent of the Tauri runtime.
+pub async fn stop_server_inner(
+    state: &ServerState,
+    events: crate::events::SharedEvents,
+) -> Result<String, String> {
     let _lifecycle_guard = state.lifecycle_gate.enter().await;
     state
         .spectrum_streaming_enabled
@@ -581,7 +598,7 @@ pub async fn stop_server(app: AppHandle, state: State<'_, ServerState>) -> Resul
     }
     audio_result?;
     if had_token {
-        let _ = app.emit("server-stopped", ());
+        events.server_stopped();
         Ok("Server stopped".to_string())
     } else {
         Err("Server is not running".to_string())

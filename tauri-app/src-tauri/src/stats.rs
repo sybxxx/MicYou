@@ -1,7 +1,7 @@
 use serde::Serialize;
 use std::sync::atomic::{AtomicI64, AtomicU64, AtomicU32, Ordering};
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct AudioMetrics {
     pub bitrate: i32,

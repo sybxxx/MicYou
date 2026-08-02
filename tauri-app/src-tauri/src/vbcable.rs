@@ -78,16 +78,13 @@ fn temp_dir() -> PathBuf {
 
 
 #[cfg(feature = "vbcable")]
-async fn download_installer(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    use tauri::Emitter;
-
+async fn download_installer(events: &crate::events::SharedEvents) -> Result<PathBuf, String> {
     let dir = temp_dir();
     tokio::fs::create_dir_all(&dir).await.map_err(|e| format!("create temp dir: {e}"))?;
 
     let zip_path = dir.join("vbcable_pack.zip");
 
-    app.emit("vbcable-install-progress", "Downloading installer...")
-        .ok();
+    events.install_progress("Downloading installer...".to_string());
 
     let bytes = reqwest::get(INSTALLER_URL)
         .await
@@ -100,8 +97,7 @@ async fn download_installer(app: &tauri::AppHandle) -> Result<PathBuf, String> {
         .await
         .map_err(|e| format!("write zip: {e}"))?;
 
-    app.emit("vbcable-install-progress", "Extracting installer...")
-        .ok();
+    events.install_progress("Extracting installer...".to_string());
 
     let extract_dir = dir.join(INSTALLER_DIR);
     tokio::fs::create_dir_all(&extract_dir)
@@ -179,10 +175,8 @@ fn cleanup_temp_files() {
 }
 
 #[cfg(feature = "vbcable")]
-async fn configure_devices(app: &tauri::AppHandle) -> Result<(), String> {
-    use tauri::Emitter;
-    app.emit("vbcable-install-progress", "Configuring devices...")
-        .ok();
+async fn configure_devices(events: &crate::events::SharedEvents) -> Result<(), String> {
+    events.install_progress("Configuring devices...".to_string());
     let scripts = vec![
         "Get-PnpDevice -FriendlyName '*CABLE Output*' | Where-Object { $_.Status -eq 'OK' } | ForEach-Object { Write-Host \"Found: $($_.FriendlyName)\" }",
     ];
@@ -196,9 +190,7 @@ async fn configure_devices(app: &tauri::AppHandle) -> Result<(), String> {
 }
 
 #[cfg(feature = "vbcable")]
-pub async fn install(app: tauri::AppHandle) -> VBCableResult {
-    use tauri::Emitter;
-
+pub async fn install(events: crate::events::SharedEvents) -> VBCableResult {
     if IS_INSTALLING.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
         return VBCableResult {
             success: false,
@@ -207,15 +199,15 @@ pub async fn install(app: tauri::AppHandle) -> VBCableResult {
         };
     }
 
-    let result = install_inner(&app).await;
+    let result = install_inner(&events).await;
     IS_INSTALLING.store(false, Ordering::SeqCst);
 
     match &result {
         VBCableResult { success: true, .. } => {
-            app.emit("vbcable-install-progress", "Installation complete").ok();
+            events.install_progress("Installation complete".to_string());
         }
         VBCableResult { error_type: Some(et), .. } => {
-            app.emit("vbcable-install-progress", format!("Failed: {et}")).ok();
+            events.install_progress(format!("Failed: {et}"));
         }
         _ => {}
     }
@@ -225,12 +217,10 @@ pub async fn install(app: tauri::AppHandle) -> VBCableResult {
 }
 
 #[cfg(feature = "vbcable")]
-async fn install_inner(app: &tauri::AppHandle) -> VBCableResult {
-    use tauri::Emitter;
-
+async fn install_inner(events: &crate::events::SharedEvents) -> VBCableResult {
     if is_installed() {
-        app.emit("vbcable-install-progress", "Configuring devices...").ok();
-        if let Err(e) = configure_devices(app).await {
+        events.install_progress("Configuring devices...".to_string());
+        if let Err(e) = configure_devices(events).await {
             return VBCableResult {
                 success: true,
                 error_type: Some("config_failed".to_string()),
@@ -244,7 +234,7 @@ async fn install_inner(app: &tauri::AppHandle) -> VBCableResult {
         };
     }
 
-    let installer_path = match download_installer(app).await {
+    let installer_path = match download_installer(events).await {
         Ok(p) => p,
         Err(e) => {
             return VBCableResult {
@@ -255,7 +245,7 @@ async fn install_inner(app: &tauri::AppHandle) -> VBCableResult {
         }
     };
 
-    app.emit("vbcable-install-progress", "Installing (requires admin approval)...").ok();
+    events.install_progress("Installing (requires admin approval)...".to_string());
 
     if let Err(e) = run_installer(&installer_path).await {
         let error_type = if e == "uac_denied" { "uac_denied" } else { "install_failed" };
@@ -266,7 +256,7 @@ async fn install_inner(app: &tauri::AppHandle) -> VBCableResult {
         };
     }
 
-    app.emit("vbcable-install-progress", "Waiting for device initialization...").ok();
+    events.install_progress("Waiting for device initialization...".to_string());
 
     if !wait_for_device(30).await {
         return VBCableResult {
@@ -276,7 +266,7 @@ async fn install_inner(app: &tauri::AppHandle) -> VBCableResult {
         };
     }
 
-    if let Err(e) = configure_devices(app).await {
+    if let Err(e) = configure_devices(events).await {
         return VBCableResult {
             success: true,
             error_type: Some("config_failed".to_string()),

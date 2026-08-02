@@ -209,7 +209,7 @@ use rustls::pki_types::CertificateDer;
 use rustls::ServerConfig;
 use std::io::BufReader;
 use std::net::SocketAddr;
-use tauri::{AppHandle, Emitter};
+use crate::events::SharedEvents;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio_rustls::{server::TlsStream, TlsAcceptor};
@@ -266,18 +266,15 @@ async fn handle_ws_socket(
     } else {
         state.client_count.fetch_add(1, Ordering::SeqCst) + 1
     };
-    let _ = state.app_handle.emit("web-client-count", count as u32);
+    state.events.web_client_count(count as u32);
     log::info!("Web client connected (total: {})", count);
 
     if count == 1 && !replaced {
-        let _ = state.app_handle.emit(
-            "device-connected",
-            serde_json::json!({
-                "name": "Web Browser",
-                "ip": "browser",
-                "latency": 0
-            }),
-        );
+        state.events.device_connected(crate::tcp_server::DeviceInfo {
+            name: "Web Browser".to_string(),
+            ip: "browser".to_string(),
+            latency: 0,
+        });
     }
 
     loop {
@@ -327,11 +324,11 @@ async fn handle_ws_socket(
 
     if state.active_sender.deactivate(generation) {
         let remaining = decrement_client_count(&state.client_count);
-        let _ = state.app_handle.emit("web-client-count", remaining as u32);
+        state.events.web_client_count(remaining as u32);
         log::info!("Web client disconnected (remaining: {})", remaining);
 
         if remaining == 0 {
-            let _ = state.app_handle.emit("device-disconnected", ());
+            state.events.device_disconnected();
         }
     } else {
         log::info!("Replaced Web client closed");
@@ -400,7 +397,7 @@ impl ActiveWebSender {
 
 #[derive(Clone)]
 pub struct WebServerState {
-    pub app_handle: AppHandle,
+    pub events: SharedEvents,
     pub audio_tx: tokio::sync::mpsc::Sender<(u64, micyou_protocol::micyou::AudioPacketMessage)>,
     pub client_count: Arc<AtomicUsize>,
     active_sender: Arc<ActiveWebSender>,
@@ -483,7 +480,7 @@ impl WebServer {
     pub async fn start(
         &self,
         port: u16,
-        app_handle: AppHandle,
+        events: SharedEvents,
         audio_tx: tokio::sync::mpsc::Sender<(u64, micyou_protocol::micyou::AudioPacketMessage)>,
     ) -> Result<(), String> {
         if self.running.load(Ordering::SeqCst) {
@@ -491,7 +488,7 @@ impl WebServer {
         }
 
         let state = WebServerState {
-            app_handle,
+            events,
             audio_tx,
             client_count: self.client_count.clone(),
             active_sender: Arc::new(ActiveWebSender::default()),

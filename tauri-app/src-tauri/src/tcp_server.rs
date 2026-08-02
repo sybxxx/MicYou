@@ -8,7 +8,7 @@ use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use tauri::{AppHandle, Emitter};
+use crate::events::SharedEvents;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
@@ -74,7 +74,7 @@ impl Drop for TaskGuard {
     }
 }
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Clone, Debug)]
 pub struct DeviceInfo {
     pub name: String,
     pub ip: String,
@@ -82,7 +82,7 @@ pub struct DeviceInfo {
 }
 
 pub async fn start_tcp_server(
-    app_handle: AppHandle,
+    events: SharedEvents,
     port: u16,
     bind_address: String,
     cancel_token: CancellationToken,
@@ -128,7 +128,7 @@ pub async fn start_tcp_server(
                             }
                         };
                         println!("New client connected: {}", addr);
-                        let app_handle = app_handle.clone();
+                        let events = events.clone();
                         let audio_tx = audio_tx.clone();
                         let stats = stats.clone();
                         let mode = mode.clone();
@@ -141,7 +141,7 @@ pub async fn start_tcp_server(
                             if let Err(e) = handle_client(
                                 socket,
                                 addr,
-                                app_handle,
+                                events,
                                 audio_tx,
                                 stats,
                                 mode,
@@ -309,7 +309,7 @@ async fn clear_if_active(active: &SharedActiveConnection, connection_id: u64) ->
 async fn handle_client(
     mut socket: TcpStream,
     addr: SocketAddr,
-    app_handle: AppHandle,
+    events: SharedEvents,
     audio_tx: tokio::sync::mpsc::Sender<AudioStreamEvent>,
     stats: Arc<crate::stats::NetworkStats>,
     mode: String,
@@ -435,7 +435,7 @@ async fn handle_client(
         .unwrap()
         .as_millis() as u64;
     run_if_active(&active_connection, &takeover_token, connection_id, || {
-        let _ = app_handle.emit("device-connected", device_info);
+        events.device_connected(device_info);
         stats.mark_tcp_connected(current_time);
     })
     .await;
@@ -445,7 +445,7 @@ async fn handle_client(
         &tx,
         &audio_tx,
         &stats,
-        &app_handle,
+        &events,
         &takeover_token,
         connection_id,
         &active_connection,
@@ -512,14 +512,14 @@ async fn handle_client(
     });
 
     let stats_emit = stats.clone();
-    let app_handle_emit = app_handle.clone();
+    let events_emit = events.clone();
     let monitor_task = tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_millis(1000));
         let mut warning_fired = false;
         loop {
             interval.tick().await;
             let buffer_duration = if mode == "usb" { 5 } else { 30 };
-            let _ = app_handle_emit.emit("audio-metrics", stats_emit.to_metrics(buffer_duration));
+            events_emit.audio_metrics(stats_emit.to_metrics(buffer_duration));
             if mode == "wifi" {
                 let now = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -534,7 +534,7 @@ async fn handle_client(
                         now.saturating_sub(last_udp)
                     };
                     if time_since_udp > 10000 && !warning_fired {
-                        let _ = app_handle_emit.emit("udp_audio_warning", ());
+                        events_emit.udp_audio_warning();
                         warning_fired = true;
                     } else if time_since_udp < 5000 && warning_fired {
                         warning_fired = false;
@@ -568,7 +568,7 @@ async fn handle_client(
                 &tx,
                 &audio_tx,
                 &stats,
-                &app_handle,
+                &events,
                 &takeover_token,
                 connection_id,
                 &active_connection,
@@ -591,7 +591,7 @@ async fn handle_client(
         if let Ok(mut active_audio) = active_audio_session.write() {
             *active_audio = ActiveAudioSession::default();
         }
-        let _ = app_handle.emit("device-disconnected", ());
+        events.device_disconnected();
     }
     reader_result
 }
@@ -601,7 +601,7 @@ async fn handle_message(
     tx: &tokio::sync::mpsc::Sender<MessageWrapper>,
     audio_tx: &tokio::sync::mpsc::Sender<AudioStreamEvent>,
     stats: &Arc<crate::stats::NetworkStats>,
-    app_handle: &AppHandle,
+    events: &SharedEvents,
     takeover_token: &CancellationToken,
     connection_id: u64,
     active_connection: &SharedActiveConnection,
@@ -673,7 +673,7 @@ async fn handle_message(
     if let Some(mute) = msg.mute {
         run_if_active(active_connection, takeover_token, connection_id, || {
             println!("Received mute state: {}", mute.is_muted);
-            let _ = app_handle.emit("mute-state-changed", mute.is_muted);
+            events.mute_state_changed(mute.is_muted);
         })
         .await;
     }

@@ -4,6 +4,7 @@ pub mod adb_manager;
 pub mod audio_stream;
 pub mod blackhole;
 pub mod commands;
+pub mod events;
 pub mod jitter_buffer;
 pub mod network;
 #[cfg(target_os = "linux")]
