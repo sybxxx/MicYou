@@ -100,7 +100,7 @@ impl ServerEvents for TuiEventSink {
     }
     fn audio_level(&self, level: u32) {
         let mut last = self.last_level.lock().unwrap();
-        if last.elapsed() >= Duration::from_millis(100) {
+        if last.elapsed() >= Duration::from_millis(70) {
             *last = Instant::now();
             drop(last);
             let _ = self.tx.send(Event::Level(level));
@@ -108,7 +108,7 @@ impl ServerEvents for TuiEventSink {
     }
     fn audio_spectrum(&self, raw: Vec<f32>, processed: Vec<f32>) {
         let mut last = self.last_spectrum.lock().unwrap();
-        if last.elapsed() >= Duration::from_millis(100) {
+        if last.elapsed() >= Duration::from_millis(70) {
             *last = Instant::now();
             drop(last);
             let _ = self.tx.send(Event::Spectrum(raw, processed));

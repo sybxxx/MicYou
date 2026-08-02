@@ -236,6 +236,7 @@ pub async fn start_server_inner(
                     lb.stop();
                 }
             }
+            session_active
         };
 
         loop {
@@ -244,8 +245,16 @@ pub async fn start_server_inner(
             match audio_rx.try_recv() {
                 Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => break,
                 Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
-                    sync_loopback(&loopback);
-                    std::thread::sleep(std::time::Duration::from_millis(500));
+                    // Poll fast (10ms) while a session is active: audio packets
+                    // can arrive after a silence gap and must not sit in the
+                    // channel for up to 500ms (that caused audible dropouts at
+                    // the start of each utterance). Idle servers sleep 500ms.
+                    let session_active = sync_loopback(&loopback);
+                    std::thread::sleep(std::time::Duration::from_millis(if session_active {
+                        10
+                    } else {
+                        500
+                    }));
                 }
                 Ok(event) => {
                     audio_manager.set_monitoring(

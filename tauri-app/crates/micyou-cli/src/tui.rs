@@ -1228,7 +1228,7 @@ pub fn run_tui(
                     dirty = false;
                 }
 
-                if crossterm::event::poll(std::time::Duration::from_millis(150))
+                if crossterm::event::poll(std::time::Duration::from_millis(100))
                     .map_err(|e| e.to_string())?
                 {
                     match event::read().map_err(|e| e.to_string())? {
