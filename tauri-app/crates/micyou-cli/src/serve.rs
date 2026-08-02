@@ -64,7 +64,7 @@ pub async fn run(args: ServeArgs) -> Result<(), String> {
     let events: Arc<dyn tauri_app_lib::events::ServerEvents> = if args.no_tui {
         Arc::new(CliEventSink)
     } else {
-        Arc::new(TuiEventSink(tx))
+        Arc::new(TuiEventSink::new(tx))
     };
 
     let result = start_server_inner(&state, port, mode.clone(), bind, device, events.clone()).await;

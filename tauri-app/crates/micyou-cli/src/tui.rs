@@ -17,10 +17,10 @@ use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Sparkline};
 use ratatui::Frame;
 use std::collections::VecDeque;
 use std::io::stdout;
-use std::time::Instant;
-use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
 use std::sync::mpsc::Receiver;
 use std::sync::Arc;
+use std::time::Instant;
+use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
 use tauri_app_lib::app_config::ServerPrefs;
 use tauri_app_lib::server::ServerState;
 use tauri_app_lib::stats::AudioMetrics;
@@ -125,26 +125,38 @@ impl TuiApp {
     }
 
     /// Sample system + process CPU/memory usage at most once per second.
-    fn sample_system(&mut self) {
-        if self.last_sample.elapsed().as_millis() < 1000 {
-            return;
+    /// Sample system + process CPU/memory usage every 2s.
+    /// Returns true when a value changed so the caller knows a redraw is needed.
+    fn sample_system(&mut self) -> bool {
+        if self.last_sample.elapsed().as_millis() < 2000 {
+            return false;
         }
         self.last_sample = Instant::now();
         self.sys.refresh_cpu_usage();
         self.sys.refresh_memory();
-        self.cpu_usage = self.sys.global_cpu_usage();
-        self.mem_used = self.sys.used_memory();
-        self.mem_total = self.sys.total_memory().max(1);
+        let cpu = self.sys.global_cpu_usage();
+        let mem_u = self.sys.used_memory();
+        let mem_t = self.sys.total_memory().max(1);
         let pid = Pid::from_u32(std::process::id());
         self.sys.refresh_processes_specifics(
             ProcessesToUpdate::Some(&[pid]),
             false,
             ProcessRefreshKind::nothing().with_cpu().with_memory(),
         );
-        if let Some(p) = self.sys.process(pid) {
-            self.proc_cpu = p.cpu_usage();
-            self.proc_mem = p.memory();
-        }
+        let (p_cpu, p_mem) = match self.sys.process(pid) {
+            Some(p) => (p.cpu_usage(), p.memory()),
+            None => (0.0, 0),
+        };
+        let changed = (cpu - self.cpu_usage).abs() > 0.5
+            || mem_u != self.mem_used
+            || (p_cpu - self.proc_cpu).abs() > 0.5
+            || p_mem != self.proc_mem;
+        self.cpu_usage = cpu;
+        self.mem_used = mem_u;
+        self.mem_total = mem_t;
+        self.proc_cpu = p_cpu;
+        self.proc_mem = p_mem;
+        changed
     }
 
     fn t(&self, key: &str) -> String {
@@ -372,7 +384,7 @@ impl TuiApp {
     /// Dashboard: two info cards, sparkline charts, spectrum and resource line.
     /// Layout tiers adapt to terminal height so nothing overflows or clutters.
     fn render_dashboard(&mut self, frame: &mut Frame, area: Rect, state: &ServerState) {
-        self.sample_system();
+        let _ = self.sample_system();
         let h = area.height;
         let (info_h, charts_h, spectrum_on, resource_on) = if h >= 26 {
             (9u16, 8u16, true, true)
@@ -383,10 +395,7 @@ impl TuiApp {
         } else {
             (7, 3, false, false)
         };
-        let mut constraints = vec![
-            Constraint::Length(info_h),
-            Constraint::Length(charts_h),
-        ];
+        let mut constraints = vec![Constraint::Length(info_h), Constraint::Length(charts_h)];
         if spectrum_on {
             constraints.push(Constraint::Min(4));
         }
@@ -556,20 +565,52 @@ impl TuiApp {
                 theme.tertiary.to_color()
             };
             let rows = vec![
-                row(self.t("bitrate").as_str(), format!("{} kbps", m.bitrate / 1000), theme.tertiary.to_color()),
-                row(self.t("sample_rate").as_str(), format!("{} Hz", m.sample_rate), theme.tertiary.to_color()),
-                row(self.t("latency").as_str(), format!("{} ms", m.latency_ms), lat_color),
-                row(self.t("network_latency").as_str(), format!("{} ms", m.network_latency_ms), theme.secondary.to_color()),
-                row(self.t("jitter").as_str(), format!("{:.1} ms", m.jitter_ms), theme.secondary.to_color()),
-                row(self.t("packet_loss").as_str(), format!("{:.1}%", m.packet_loss_rate * 100.0), loss_color),
-                row(self.t("buffer").as_str(), format!("{} ms", m.buffer_duration_ms), theme.secondary.to_color()),
+                row(
+                    self.t("bitrate").as_str(),
+                    format!("{} kbps", m.bitrate / 1000),
+                    theme.tertiary.to_color(),
+                ),
+                row(
+                    self.t("sample_rate").as_str(),
+                    format!("{} Hz", m.sample_rate),
+                    theme.tertiary.to_color(),
+                ),
+                row(
+                    self.t("latency").as_str(),
+                    format!("{} ms", m.latency_ms),
+                    lat_color,
+                ),
+                row(
+                    self.t("network_latency").as_str(),
+                    format!("{} ms", m.network_latency_ms),
+                    theme.secondary.to_color(),
+                ),
+                row(
+                    self.t("jitter").as_str(),
+                    format!("{:.1} ms", m.jitter_ms),
+                    theme.secondary.to_color(),
+                ),
+                row(
+                    self.t("packet_loss").as_str(),
+                    format!("{:.1}%", m.packet_loss_rate * 100.0),
+                    loss_color,
+                ),
+                row(
+                    self.t("buffer").as_str(),
+                    format!("{} ms", m.buffer_duration_ms),
+                    theme.secondary.to_color(),
+                ),
             ];
             frame.render_widget(Paragraph::new(rows).block(block), area);
         } else {
             let hint = if self.ips.is_empty() {
                 self.t("server_addr_hint")
             } else {
-                format!("{}:{}", self.ips.first().cloned().unwrap_or_default(), self.port)
+                format!(
+                    "{}:{}",
+                    self.ips.first().cloned().unwrap_or_default(),
+                    self.port
+                )
             };
             frame.render_widget(
                 Paragraph::new(vec![
@@ -611,25 +652,49 @@ impl TuiApp {
         let line = Line::from(vec![
             Span::styled(
                 format!("  {} ", self.t("sys_cpu")),
-                Style::default().fg(theme.secondary.to_color()).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(theme.secondary.to_color())
+                    .add_modifier(Modifier::BOLD),
             ),
-            bar(cpu_pct, if cpu_pct > 80 { theme.error.to_color() } else { theme.primary.to_color() }, w),
+            bar(
+                cpu_pct,
+                if cpu_pct > 80 {
+                    theme.error.to_color()
+                } else {
+                    theme.primary.to_color()
+                },
+                w,
+            ),
             Span::raw(format!(" {cpu_pct}%   ")),
             Span::styled(
                 format!("{} ", self.t("sys_mem")),
-                Style::default().fg(theme.secondary.to_color()).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(theme.secondary.to_color())
+                    .add_modifier(Modifier::BOLD),
             ),
-            bar(mem_pct, if mem_pct > 90 { theme.error.to_color() } else { theme.tertiary.to_color() }, w),
+            bar(
+                mem_pct,
+                if mem_pct > 90 {
+                    theme.error.to_color()
+                } else {
+                    theme.tertiary.to_color()
+                },
+                w,
+            ),
             Span::raw(format!(" {mem_pct}%   ")),
             Span::styled(
-                format!("{} {:.1}%  {} {:.0}MB", self.t("proc_cpu"), self.proc_cpu, self.t("proc_mem"), mb),
+                format!(
+                    "{} {:.1}%  {} {:.0}MB",
+                    self.t("proc_cpu"),
+                    self.proc_cpu,
+                    self.t("proc_mem"),
+                    mb
+                ),
                 Style::default().fg(theme.secondary.to_color()),
             ),
         ]);
         frame.render_widget(Paragraph::new(line), area);
     }
-
-
 
     /// Compact status bar: server state, mode/port, device, mute, web clients
 
@@ -695,7 +760,10 @@ impl TuiApp {
         frame.render_widget(spark, parts[0]);
         let line = Line::from(vec![
             Span::raw(" "),
-            Span::styled(readout, Style::default().fg(color).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                readout,
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
+            ),
         ]);
         frame.render_widget(Paragraph::new(line), parts[1]);
     }
@@ -771,7 +839,9 @@ impl TuiApp {
         lines.push(Line::from(Span::styled(
             "█".repeat((n_cols as f32 * peak) as usize)
                 + &" ".repeat(width.saturating_sub((n_cols as f32 * peak) as usize)),
-            Style::default().fg(theme.on_surface.to_color()).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme.on_surface.to_color())
+                .add_modifier(Modifier::BOLD),
         )));
         for row in 1..height {
             let threshold = (height - 1 - row) as f32 / (height - 1).max(1) as f32;
@@ -1147,12 +1217,18 @@ pub fn run_tui(
     // would otherwise leave the alternate screen active and "break" the terminal)
     let result =
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<(), String> {
+            let mut dirty = true;
             loop {
-                terminal
-                    .draw(|frame| app.render(frame, &state))
-                    .map_err(|e| e.to_string())?;
+                // Redraw only when something changed: input, server event or
+                // a sampled resource value - idle frames cost almost nothing.
+                if dirty {
+                    terminal
+                        .draw(|frame| app.render(frame, &state))
+                        .map_err(|e| e.to_string())?;
+                    dirty = false;
+                }
 
-                if crossterm::event::poll(std::time::Duration::from_millis(80))
+                if crossterm::event::poll(std::time::Duration::from_millis(150))
                     .map_err(|e| e.to_string())?
                 {
                     match event::read().map_err(|e| e.to_string())? {
@@ -1160,6 +1236,7 @@ pub fn run_tui(
                             if handle_key(&mut app, key, &state) {
                                 break;
                             }
+                            dirty = true;
                         }
                         CrosstermEvent::Mouse(mouse) => {
                             let size = terminal.size().map_err(|e| e.to_string())?;
@@ -1167,6 +1244,7 @@ pub fn run_tui(
                             if handle_mouse(&mut app, mouse, area, &state) {
                                 break;
                             }
+                            dirty = true;
                         }
                         _ => {}
                     }
@@ -1175,6 +1253,12 @@ pub fn run_tui(
                 // Drain incoming server events
                 while let Ok(ev) = rx.try_recv() {
                     app.on_event(ev);
+                    dirty = true;
+                }
+
+                // Resource values refresh every 2s - redraw only on change
+                if app.sample_system() {
+                    dirty = true;
                 }
             }
             Ok(())

@@ -3,6 +3,7 @@ use tauri::{AppHandle, Manager, State};
 use tokio_util::sync::CancellationToken;
 
 use crate::audio_stream::{validate_audio_packet, AudioStreamEvent, ExpectedAudioSession};
+use crate::udp_server::ActiveAudioSession;
 use crate::server::{await_startup_ready, ServerState, AUDIO_JOIN_TIMEOUT, STARTUP_TIMEOUT};
 
 const NETWORK_TASK_JOIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
@@ -167,6 +168,7 @@ pub async fn start_server_inner(
 
     let is_monitoring_flag = state.is_monitoring.clone();
     let spectrum_streaming_enabled = state.spectrum_streaming_enabled.clone();
+    let active_audio_session_audio = state.active_audio_session.clone();
 
     let audio_thread = std::thread::spawn(move || {
         let mut audio_manager = micyou_audio::AudioOutputManager::new();
@@ -205,26 +207,54 @@ pub async fn start_server_inner(
         let mut resample_out_buf = Vec::new();
         let mut pcm_f32 = Vec::new();
 
-        // Start speaker loopback capture for AEC far-end reference.
-        // Captures actual speaker output via WASAPI (Windows) / BlackHole (macOS) / PipeWire (Linux).
+        // Speaker loopback capture for the AEC far-end reference
+        // (WASAPI loopback / BlackHole / PipeWire virtual mic). Started lazily:
+        // the idle heartbeat below starts it only while a device session is
+        // active and stops it when idle, so an idle server costs ~0% CPU
+        // instead of keeping a cpal capture stream spinning.
         let loopback = micyou_audio::LoopbackCapture::new();
-        if loopback.start() {
-            log::info!("[Audio] Speaker loopback capture started for AEC");
-        } else {
-            log::warn!("[Audio] Failed to start speaker loopback, AEC far-end will be unavailable");
-        }
 
-        while let Some(event) = audio_rx.blocking_recv() {
-            audio_manager
-                .set_monitoring(is_monitoring_flag.load(std::sync::atomic::Ordering::Relaxed));
-            match event {
-                AudioStreamEvent::SessionStarting { expected, epoch } => {
-                    jb.prepare_transport_session_epoch(expected, epoch);
-                    continue;
+        // Sync the AEC far-end capture with the current session state.
+        let sync_loopback = |loopback: &micyou_audio::LoopbackCapture| {
+            let session_active = !matches!(
+                *active_audio_session_audio
+                    .read()
+                    .unwrap_or_else(|p| p.into_inner()),
+                ActiveAudioSession::Inactive
+            );
+            if session_active && !loopback.is_active() {
+                if loopback.start() {
+                    log::info!("[Audio] Speaker loopback capture started for AEC");
                 }
-                AudioStreamEvent::Packet { packet, epoch } => jb.push_epoch(packet, epoch),
+            } else if !session_active && loopback.is_active() {
+                loopback.stop();
             }
-            let packets: Vec<_> = std::iter::from_fn(|| jb.pop()).collect();
+        };
+
+        loop {
+            // Idle heartbeat every 500ms: with no device session the loopback
+            // capture stream stays stopped (biggest idle CPU win).
+            match audio_rx.try_recv() {
+                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => break,
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
+                    sync_loopback(&loopback);
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                }
+                Ok(event) => {
+                    audio_manager.set_monitoring(
+                        is_monitoring_flag.load(std::sync::atomic::Ordering::Relaxed),
+                    );
+                    match event {
+                        AudioStreamEvent::SessionStarting { expected, epoch } => {
+                            sync_loopback(&loopback);
+                            jb.prepare_transport_session_epoch(expected, epoch);
+                            continue;
+                        }
+                        AudioStreamEvent::Packet { packet, epoch } => {
+                            jb.push_epoch(packet, epoch)
+                        }
+                    }
+                    let packets: Vec<_> = std::iter::from_fn(|| jb.pop()).collect();
 
             for ordered_packet in packets {
                 if let Some(audio_data) = ordered_packet.audio_packet {
@@ -349,11 +379,13 @@ pub async fn start_server_inner(
                         }
                     }
                 }
+                }
             }
-        }
+            }
 
-        loopback.stop();
-        log::info!("[Audio] Speaker loopback stopped");
+            loopback.stop();
+            log::info!("[Audio] Speaker loopback stopped");
+        }
     });
 
     state.lifecycle.lock().await.set_audio_thread(audio_thread);

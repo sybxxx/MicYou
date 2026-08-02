@@ -2,6 +2,8 @@ use std::sync::mpsc::Sender;
 use tauri_app_lib::events::ServerEvents;
 use tauri_app_lib::stats::AudioMetrics;
 use tauri_app_lib::tcp_server::DeviceInfo;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 /// Log-mode events: print a compact line per event.
 pub struct CliEventSink;
@@ -44,8 +46,27 @@ impl ServerEvents for CliEventSink {
     }
 }
 
-/// TUI-mode events: forward to the TUI channel (Phase 3).
-pub struct TuiEventSink(pub Sender<Event>);
+/// TUI-mode events: forward to the TUI channel.
+/// Level/spectrum events are throttled to ~100ms because the audio thread
+/// fires them every ~60ms while the TUI only redraws ~6-7 times per second,
+/// so most of them would be dropped anyway - throttling saves the mpsc send,
+/// the Vec allocation and the queue churn.
+pub struct TuiEventSink {
+    tx: Sender<Event>,
+    last_level: Mutex<Instant>,
+    last_spectrum: Mutex<Instant>,
+}
+
+impl TuiEventSink {
+    pub fn new(tx: Sender<Event>) -> Self {
+        let past = Instant::now() - Duration::from_secs(10);
+        Self {
+            tx,
+            last_level: Mutex::new(past),
+            last_spectrum: Mutex::new(past),
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub enum Event {
@@ -63,33 +84,43 @@ pub enum Event {
 
 impl ServerEvents for TuiEventSink {
     fn device_connected(&self, info: DeviceInfo) {
-        let _ = self.0.send(Event::DeviceConnected(info));
+        let _ = self.tx.send(Event::DeviceConnected(info));
     }
     fn device_disconnected(&self) {
-        let _ = self.0.send(Event::DeviceDisconnected);
+        let _ = self.tx.send(Event::DeviceDisconnected);
     }
     fn audio_metrics(&self, metrics: AudioMetrics) {
-        let _ = self.0.send(Event::Metrics(metrics));
+        let _ = self.tx.send(Event::Metrics(metrics));
     }
     fn udp_audio_warning(&self) {
-        let _ = self.0.send(Event::UdpWarning);
+        let _ = self.tx.send(Event::UdpWarning);
     }
     fn mute_state_changed(&self, is_muted: bool) {
-        let _ = self.0.send(Event::MuteChanged(is_muted));
+        let _ = self.tx.send(Event::MuteChanged(is_muted));
     }
     fn audio_level(&self, level: u32) {
-        let _ = self.0.send(Event::Level(level));
+        let mut last = self.last_level.lock().unwrap();
+        if last.elapsed() >= Duration::from_millis(100) {
+            *last = Instant::now();
+            drop(last);
+            let _ = self.tx.send(Event::Level(level));
+        }
     }
     fn audio_spectrum(&self, raw: Vec<f32>, processed: Vec<f32>) {
-        let _ = self.0.send(Event::Spectrum(raw, processed));
+        let mut last = self.last_spectrum.lock().unwrap();
+        if last.elapsed() >= Duration::from_millis(100) {
+            *last = Instant::now();
+            drop(last);
+            let _ = self.tx.send(Event::Spectrum(raw, processed));
+        }
     }
     fn server_stopped(&self) {
-        let _ = self.0.send(Event::Stopped);
+        let _ = self.tx.send(Event::Stopped);
     }
     fn web_client_count(&self, count: u32) {
-        let _ = self.0.send(Event::WebClientCount(count));
+        let _ = self.tx.send(Event::WebClientCount(count));
     }
     fn install_progress(&self, message: String) {
-        let _ = self.0.send(Event::InstallProgress(message));
+        let _ = self.tx.send(Event::InstallProgress(message));
     }
 }
