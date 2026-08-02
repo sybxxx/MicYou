@@ -207,27 +207,34 @@ pub async fn start_server_inner(
         let mut resample_out_buf = Vec::new();
         let mut pcm_f32 = Vec::new();
 
-        // Speaker loopback capture for the AEC far-end reference
-        // (WASAPI loopback / BlackHole / PipeWire virtual mic). Started lazily:
-        // the idle heartbeat below starts it only while a device session is
-        // active and stops it when idle, so an idle server costs ~0% CPU
-        // instead of keeping a cpal capture stream spinning.
-        let loopback = micyou_audio::LoopbackCapture::new();
+        // Speaker loopback capture for the AEC far-end reference.
+        // AEC is only supported on Windows (it is disabled on Linux/macOS), so
+        // the loopback capture stream is created on Windows only - on other
+        // platforms it would burn CPU reading BlackHole/PipeWire for data the
+        // DSP never uses. Started lazily: the idle heartbeat below starts it
+        // only while a device session is active and stops it when idle.
+        #[cfg(target_os = "windows")]
+        let loopback: Option<micyou_audio::LoopbackCapture> =
+            Some(micyou_audio::LoopbackCapture::new());
+        #[cfg(not(target_os = "windows"))]
+        let loopback: Option<micyou_audio::LoopbackCapture> = None;
 
         // Sync the AEC far-end capture with the current session state.
-        let sync_loopback = |loopback: &micyou_audio::LoopbackCapture| {
+        let sync_loopback = |loopback: &Option<micyou_audio::LoopbackCapture>| {
             let session_active = !matches!(
                 *active_audio_session_audio
                     .read()
                     .unwrap_or_else(|p| p.into_inner()),
                 ActiveAudioSession::Inactive
             );
-            if session_active && !loopback.is_active() {
-                if loopback.start() {
-                    log::info!("[Audio] Speaker loopback capture started for AEC");
+            if let Some(lb) = loopback {
+                if session_active && !lb.is_active() {
+                    if lb.start() {
+                        log::info!("[Audio] Speaker loopback capture started for AEC");
+                    }
+                } else if !session_active && lb.is_active() {
+                    lb.stop();
                 }
-            } else if !session_active && loopback.is_active() {
-                loopback.stop();
             }
         };
 
@@ -352,10 +359,12 @@ pub async fn start_server_inner(
                             // Read speaker loopback for AEC far-end reference.
                             // This captures the ACTUAL speaker output (WASAPI/BlackHole/PipeWire),
                             // which is the true echo source the phone mic picks up.
-                            if loopback.is_active() {
-                                let hop = 480usize;
-                                if let Some(far_data) = loopback.read(hop) {
-                                    dsp_processor.set_far_end_audio(&far_data);
+                            if let Some(lb) = &loopback {
+                                if lb.is_active() {
+                                    let hop = 480usize;
+                                    if let Some(far_data) = lb.read(hop) {
+                                        dsp_processor.set_far_end_audio(&far_data);
+                                    }
                                 }
                             }
                             let (_raw, processed) =
@@ -383,7 +392,9 @@ pub async fn start_server_inner(
             }
             }
 
-            loopback.stop();
+            if let Some(lb) = &loopback {
+                lb.stop();
+            }
             log::info!("[Audio] Speaker loopback stopped");
         }
     });
