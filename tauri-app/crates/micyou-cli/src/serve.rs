@@ -32,11 +32,14 @@ pub async fn run(args: ServeArgs) -> Result<(), String> {
             Some(prefs.bind_address.clone())
         }
     });
+    // The GUI writes "auto"/"default" to mean "no explicit device" — normalize
+    // those to None so the CLI behaves identically to the GUI.
     let device = args.device.or_else(|| {
-        if prefs.output_device.is_empty() {
+        let d = prefs.output_device.trim();
+        if d.is_empty() || d == "auto" || d == "default" {
             None
         } else {
-            Some(prefs.output_device.clone())
+            Some(d.to_string())
         }
     });
     // Validate / normalize the connection mode (wifi | usb | web)

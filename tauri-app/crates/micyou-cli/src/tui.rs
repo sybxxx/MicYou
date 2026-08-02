@@ -223,9 +223,10 @@ impl TuiApp {
 
         // Left column: status list on top, spectrum below (length sized so the
         // IP rows are never clipped; spectrum takes the rest)
+        // Percentage split survives tiny/resized terminals (fixed lengths overflow)
         let left_col = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(11), Constraint::Min(3)])
+            .constraints([Constraint::Percentage(42), Constraint::Percentage(58)])
             .split(chunks[0]);
 
         // Left: server + device status
@@ -637,7 +638,9 @@ pub fn run_tui(
     let mut terminal = ratatui::Terminal::new(ratatui::backend::CrosstermBackend::new(stdout()))
         .map_err(|e| e.to_string())?;
 
-    let result = (|| -> Result<(), String> {
+    // Catch panics so `leave()` always restores the terminal (a panicking draw
+    // would otherwise leave the alternate screen active and "break" the terminal)
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<(), String> {
         loop {
             terminal
                 .draw(|frame| app.render(frame, &state))
@@ -659,10 +662,13 @@ pub fn run_tui(
             }
         }
         Ok(())
-    })();
+    }));
 
     leave()?;
-    result
+    match result {
+        Ok(r) => r,
+        Err(_) => Err("TUI render panicked; terminal restored".to_string()),
+    }
 }
 
 fn handle_key(app: &mut TuiApp, key: KeyEvent, state: &ServerState) -> bool {
@@ -670,16 +676,16 @@ fn handle_key(app: &mut TuiApp, key: KeyEvent, state: &ServerState) -> bool {
         KeyCode::Char('q') | KeyCode::Char('Q') => return true,
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => return true,
         KeyCode::Tab => {
-            app.tab = (app.tab + 1) % 4;
+            app.tab = (app.tab + 1) % 5;
         }
         KeyCode::BackTab => {
-            app.tab = (app.tab + 3) % 4;
+            app.tab = (app.tab + 4) % 5;
         }
         KeyCode::Left => {
-            app.tab = (app.tab + 3) % 4;
+            app.tab = (app.tab + 4) % 5;
         }
         KeyCode::Right => {
-            app.tab = (app.tab + 1) % 4;
+            app.tab = (app.tab + 1) % 5;
         }
         KeyCode::Up => match app.tab {
             1 => app.selected_setting = app.selected_setting.saturating_sub(1),
