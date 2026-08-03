@@ -103,16 +103,16 @@ jobs:
           iscc "/DMyAppVersion=${{ steps.version.outputs.version }}" src-tauri/installer.iss
 
       - name: Prepare Windows artifact
-        working-directory: tauri-app
         shell: pwsh
         run: |
-          $installer = Get-ChildItem -Path src-tauri/target/release/bundle/inno -Filter '*.exe' |
+          $installer = Get-ChildItem -Path tauri-app/src-tauri/target/release/bundle/inno -Filter '*.exe' |
             Select-Object -First 1
           if (-not $installer) {
             throw 'Inno Setup installer was not found'
           }
-          New-Item -ItemType Directory -Force -Path release-artifacts | Out-Null
-          Copy-Item $installer.FullName "release-artifacts/MicYou-Win-${{ steps.version.outputs.version }}-installer.exe" -Force
+          $dest = "${{ github.workspace }}/release-artifacts"
+          New-Item -ItemType Directory -Force -Path $dest | Out-Null
+          Copy-Item $installer.FullName "$dest/MicYou-Win-${{ steps.version.outputs.version }}-installer.exe" -Force
 
       - name: Upload Windows artifact
         uses: actions/upload-artifact@v4
