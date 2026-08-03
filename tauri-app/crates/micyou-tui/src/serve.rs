@@ -15,7 +15,7 @@ pub struct ServeArgs {
 
 /// Start the audio server and own it for the lifetime of the terminal UI.
 pub async fn run(args: ServeArgs) -> Result<(), String> {
-    tauri_app_lib::mode_lock::acquire(RunMode::Cli)?;
+    tauri_app_lib::mode_lock::acquire(RunMode::Tui)?;
 
     let prefs = tauri_app_lib::app_config::load_server_prefs();
     let port = args.port.unwrap_or(prefs.port);

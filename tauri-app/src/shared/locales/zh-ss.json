@@ -246,13 +246,17 @@
     },
     "runMode": {
       "title": "运行模式项",
-      "desc": "CLI 模式使用更少内存项，通过终端运行",
+      "desc": "CLI 和 TUI 模式使用更少内存项，通过终端运行",
       "switchButton": "切换到 CLI 模式项",
+      "switchTuiButton": "切换到 TUI 模式项",
       "confirmSwitch": "切换到 CLI 模式？图形界面将关闭项，终端将打开运行 micyou serve",
+      "confirmSwitchTui": "切换到 TUI 模式？图形界面将关闭项，终端将打开运行 micyou-tui",
       "switchFailed": "切换失败项",
       "guiCurrent": "图形界面 (GUI) 项",
       "cliRunningShort": "CLI 运行中项",
-      "cliRunning": "CLI 模式正在运行项 (PID {pid})，请在终端中停止后再切换"
+      "cliRunning": "CLI 模式正在运行项 (PID {pid})，请在终端中停止后再切换",
+      "tuiRunningShort": "TUI 运行中项",
+      "tuiRunning": "TUI 模式正在运行项 (PID {pid})，请在终端中停止后再切换"
     }
   },
   "dialogs": {
@@ -299,7 +303,8 @@
     "start": "开始推流",
     "stop": "停止推流",
     "exit": "出口程序项",
-    "switchCli": "切换到 CLI 模式项"
+    "switchCli": "切换到 CLI 模式项",
+    "switchTui": "切换到 TUI 模式项"
   },
   "closeConfirm": {
     "title": "关闭确认标题项",

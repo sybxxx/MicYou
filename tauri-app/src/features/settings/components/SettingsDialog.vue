@@ -43,7 +43,7 @@
                 <div class="flex items-center gap-2">
                   <span
                     class="px-3 py-1 rounded-full text-xs font-semibold"
-                    :class="modeStatus.mode === 'cli' && modeStatus.running
+                    :class="modeStatus.mode !== 'gui' && modeStatus.mode !== 'none' && modeStatus.running
                       ? 'bg-warning-container/40 text-warning'
                       : 'bg-primary-container/40 text-primary'"
                   >
@@ -54,12 +54,23 @@
               <p v-if="modeStatus.mode === 'cli' && modeStatus.running" class="mt-2 text-xs text-warning">
                 {{ $t('settings.runMode.cliRunning', { pid: modeStatus.pid }) }}
               </p>
-              <button
-                @click="switchToCli"
-                class="mt-3 w-full rounded-xl bg-primary px-4 py-2.5 text-sm font-semibold text-on-primary hover:opacity-90 transition-opacity"
-              >
-                {{ $t('settings.runMode.switchButton') }}
-              </button>
+              <p v-if="modeStatus.mode === 'tui' && modeStatus.running" class="mt-2 text-xs text-warning">
+                {{ $t('settings.runMode.tuiRunning', { pid: modeStatus.pid }) }}
+              </p>
+              <div class="mt-3 grid grid-cols-2 gap-2">
+                <button
+                  @click="switchToCli"
+                  class="w-full rounded-xl bg-primary px-4 py-2.5 text-sm font-semibold text-on-primary hover:opacity-90 transition-opacity"
+                >
+                  {{ $t('settings.runMode.switchButton') }}
+                </button>
+                <button
+                  @click="switchToTui"
+                  class="w-full rounded-xl bg-secondary px-4 py-2.5 text-sm font-semibold text-on-secondary hover:opacity-90 transition-opacity"
+                >
+                  {{ $t('settings.runMode.switchTuiButton') }}
+                </button>
+              </div>
             </div>
 
             <div class="bg-surface-bright/60 backdrop-blur-lg rounded-2xl p-4 flex items-center justify-between shadow-sm border border-white/5">
@@ -807,9 +818,9 @@ const applyCustomColor = (color: { h: number, s: number, l: number }) => {
   themeColor.value = 'theme-custom';
 };
 
-// --- Run mode (GUI / CLI) ---
+// --- Run mode (GUI / CLI / TUI) ---
 interface ModeStatus {
-  mode: 'gui' | 'cli' | 'none';
+  mode: 'gui' | 'cli' | 'tui' | 'none';
   pid: number | null;
   running: boolean;
 }
@@ -819,6 +830,9 @@ const modeStatus = ref<ModeStatus>({ mode: 'none', pid: null, running: false });
 const modeLabel = computed(() => {
   if (modeStatus.value.mode === 'cli' && modeStatus.value.running) {
     return t('settings.runMode.cliRunningShort');
+  }
+  if (modeStatus.value.mode === 'tui' && modeStatus.value.running) {
+    return t('settings.runMode.tuiRunningShort');
   }
   return t('settings.runMode.guiCurrent');
 });
@@ -839,6 +853,19 @@ async function switchToCli() {
     await invoke('exit_app');
   } catch (e) {
     console.error('switch_to_cli failed:', e);
+    alert(`${t('settings.runMode.switchFailed')}: ${e}`);
+    refreshModeStatus();
+  }
+}
+
+async function switchToTui() {
+  const ok = confirm(t('settings.runMode.confirmSwitchTui'));
+  if (!ok) return;
+  try {
+    await invoke('switch_to_tui');
+    await invoke('exit_app');
+  } catch (e) {
+    console.error('switch_to_tui failed:', e);
     alert(`${t('settings.runMode.switchFailed')}: ${e}`);
     refreshModeStatus();
   }
