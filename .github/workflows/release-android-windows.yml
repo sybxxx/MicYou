@@ -97,15 +97,16 @@ jobs:
           if (-not $binary) {
             throw 'Tauri executable was not found'
           }
-          Copy-Item $binary.FullName 'target/release/MicYou.exe' -Force
-          New-Item -ItemType Directory -Force -Path 'target/release/bundle/inno' | Out-Null
+          New-Item -ItemType Directory -Force -Path 'src-tauri/target/release' | Out-Null
+          Copy-Item $binary.FullName 'src-tauri/target/release/MicYou.exe' -Force
+          New-Item -ItemType Directory -Force -Path 'src-tauri/target/release/bundle/inno' | Out-Null
           iscc "/DMyAppVersion=${{ steps.version.outputs.version }}" src-tauri/installer.iss
 
       - name: Prepare Windows artifact
         working-directory: tauri-app
         shell: pwsh
         run: |
-          $installer = Get-ChildItem -Path target/release/bundle/inno -Filter '*.exe' |
+          $installer = Get-ChildItem -Path src-tauri/target/release/bundle/inno -Filter '*.exe' |
             Select-Object -First 1
           if (-not $installer) {
             throw 'Inno Setup installer was not found'
