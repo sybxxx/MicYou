@@ -32,16 +32,40 @@ jobs:
       - name: Grant execute permission for Gradle wrapper
         run: chmod +x gradlew
 
-      - name: Build Android release APK
+      - name: Require and decode Android signing key
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          test -n "$ANDROID_KEYSTORE_BASE64"
+          test -n "$ANDROID_KEYSTORE_PASSWORD"
+          test -n "$ANDROID_KEY_ALIAS"
+          test -n "$ANDROID_KEY_PASSWORD"
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/micyou-release.keystore"
+          test -s "$RUNNER_TEMP/micyou-release.keystore"
+
+      - name: Build signed Android release APK
+        env:
+          ANDROID_KEYSTORE_PATH: ${{ runner.temp }}/micyou-release.keystore
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: ./gradlew :composeApp:assembleRelease
 
-      - name: Prepare Android artifact
+      - name: Verify and prepare Android artifact
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p release-artifacts
           APK=$(find composeApp/build/outputs/apk/release -maxdepth 1 -type f -name '*.apk' | head -n 1)
           test -n "$APK"
+          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)
+          test -n "$APKSIGNER"
+          "$APKSIGNER" verify --verbose --print-certs "$APK"
+          mkdir -p release-artifacts
           cp "$APK" "release-artifacts/MicYou-Android-${{ steps.version.outputs.version }}.apk"
 
       - name: Upload Android artifact
@@ -166,6 +190,8 @@ jobs:
           prerelease: true
           make_latest: false
           generate_release_notes: true
+          overwrite_files: true
+          fail_on_unmatched_files: true
           files: |
             release-artifacts/MicYou-Android-${{ steps.version.outputs.version }}.apk
             release-artifacts/MicYou-Win-${{ steps.version.outputs.version }}-installer.exe
