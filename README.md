@@ -90,7 +90,9 @@ Made with [contrib.rocks](https://contrib.rocks).
 
 Special thanks to [a2heng](https://github.com/a2heng) for open-sourcing [AEC7](https://github.com/a2heng/lightweight-aec-48k) and [PureVox](https://github.com/a2heng/lightweight-denoise-48k), which power MicYou's acoustic echo cancellation and AI noise suppression.
 
-Special thanks to [CQU Open Source Software Mirror](https://mirrors.cqu.edu.cn/) for providing a mirror download service for this project.
+Special thanks to [HeRNET Open Source Software Mirror](https://mirrors.ha.edu.cn/) for providing a mirror download service for this project.
+
+Special thanks to [CQU Open Source Software Mirror](https://mirrors.cqu.edu.cn/) for your consistent support in the past.
 
 Special thanks to [MirrorChyan](https://mirrorchyan.com/en/get-start) for providing a high-speed mirror download service for this project.
 
