@@ -251,7 +251,8 @@ fn create_loopback() -> bool {
         SINK_NAME
     );
     let playback_props = format!(
-        "{{\"node.description\": \"{}\", \"media.class\": \"Audio/Source\"}}",
+        "{{\"node.name\": \"{}\", \"node.description\": \"{}\", \"media.class\": \"Audio/Source\"}}",
+        SOURCE_NAME,
         SOURCE_NAME
     );
 

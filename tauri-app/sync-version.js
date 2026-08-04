@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync } from 'fs';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { execFileSync } from 'child_process';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const gradlePropsPath = resolve(__dirname, '..', 'gradle.properties');
@@ -36,23 +37,39 @@ function toSemver(version) {
 
 function updateTauriConfig(version) {
   const config = JSON.parse(readFileSync(tauriConfigPath, 'utf-8'));
+  if (config.version === version) return;
+
   config.version = version;
   writeFileSync(tauriConfigPath, JSON.stringify(config, null, 2) + '\n');
   console.log(`Updated tauri.conf.json: ${version}`);
 }
 
 function updateCargoToml(version) {
-  let content = readFileSync(cargoTomlPath, 'utf-8');
-  content = content.replace(/^version\s*=\s*".*"$/m, `version = "${version}"`);
-  writeFileSync(cargoTomlPath, content);
+  const content = readFileSync(cargoTomlPath, 'utf-8');
+  const updated = content.replace(/^version\s*=\s*".*"$/m, `version = "${version}"`);
+  if (updated === content) return;
+
+  writeFileSync(cargoTomlPath, updated);
   console.log(`Updated Cargo.toml: ${version}`);
 }
 
 function updatePackageJson(version) {
   const pkg = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
+  if (pkg.version === version) return;
+
   pkg.version = version;
   writeFileSync(packageJsonPath, JSON.stringify(pkg, null, 2) + '\n');
   console.log(`Updated package.json: ${version}`);
+}
+
+function updateCargoLock() {
+  // Cargo.lock records the local micyou-app package version. Refresh it after
+  // rewriting Cargo.toml so subsequent cargo-about --locked runs stay reproducible.
+  execFileSync('cargo', ['metadata', '--format-version', '1'], {
+    cwd: __dirname,
+    stdio: ['ignore', 'ignore', 'inherit']
+  });
+  console.log('Updated Cargo.lock');
 }
 
 try {
@@ -64,6 +81,7 @@ try {
   
   updateTauriConfig(semver);
   updateCargoToml(semver);
+  updateCargoLock();
   updatePackageJson(semver);
   
   console.log('Version sync completed!');

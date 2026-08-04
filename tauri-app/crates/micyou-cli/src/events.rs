@@ -1,4 +1,4 @@
-use tauri_app_lib::events::ServerEvents;
+use tauri_app_lib::events::{AecStatus, ServerEvents};
 use tauri_app_lib::stats::AudioMetrics;
 use tauri_app_lib::tcp_server::DeviceInfo;
 
@@ -40,5 +40,12 @@ impl ServerEvents for CliEventSink {
     }
     fn install_progress(&self, message: String) {
         println!("[install] {message}");
+    }
+    fn aec_status_changed(&self, status: AecStatus) {
+        if status.available && status.enabled {
+            println!("[aec] enabled");
+        } else if let Some(reason) = status.reason {
+            println!("[warn] AEC disabled: {reason}");
+        }
     }
 }

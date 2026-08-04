@@ -1,7 +1,7 @@
 use std::sync::mpsc::Sender;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
-use tauri_app_lib::events::ServerEvents;
+use tauri_app_lib::events::{AecStatus, ServerEvents};
 use tauri_app_lib::stats::AudioMetrics;
 use tauri_app_lib::tcp_server::DeviceInfo;
 
@@ -18,6 +18,7 @@ pub enum Event {
     Stopped,
     WebClientCount(u32),
     InstallProgress(String),
+    AecStatus(AecStatus),
 }
 
 /// Forward server events to the TUI channel while throttling high-frequency
@@ -88,5 +89,9 @@ impl ServerEvents for TuiEventSink {
 
     fn install_progress(&self, message: String) {
         let _ = self.tx.send(Event::InstallProgress(message));
+    }
+
+    fn aec_status_changed(&self, status: AecStatus) {
+        let _ = self.tx.send(Event::AecStatus(status));
     }
 }

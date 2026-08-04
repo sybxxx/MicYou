@@ -43,7 +43,14 @@
     "notify": {
       "connected": "设备连接成功喵~ ✓",
       "disconnected": "设备断开连接喵~ (×_×;)",
-      "usbDisconnected": "USB 断开了喵~请重新插线并点击连接喵~"
+      "usbDisconnected": "USB 断开了喵~请重新插线并点击连接喵~",
+      "aecDisabled": "AEC 不可用喵~已自动停用喵~",
+      "aecDisabledInferenceFailed": "AEC 音频处理失败喵~已自动停用喵~",
+      "aecDisabledModelLoadFailed": "AEC AI 模型加载失败喵~已自动停用喵~",
+      "aecDisabledModelMissing": "找不到 AEC AI 模型喵~已自动停用喵~",
+      "aecDisabledPipeWireUnavailable": "PipeWire 不可用喵~AEC 已自动停用喵~",
+      "aecDisabledReferenceLost": "AEC 音频参考流中断了喵~已自动停用喵~",
+      "aecDisabledVirtualSourceMissing": "找不到虚拟音频源喵~AEC 已自动停用喵~"
     },
     "ipSelector": {
       "allInterfaces": "全部喵~",
@@ -196,6 +203,7 @@
       "aec": "声学回声消除喵~ (AEC)",
       "aecDesc": "用 AI 从麦克风消除扬声器回声喵~ 🎤",
       "aecUnavailable": "在此系统上不可用喵~ 🚫",
+      "aecRuntimeUnavailable": "已自动停用喵~音频参考流不可用喵~",
       "bufferSize": "输出缓冲区大小喵~ 📦",
       "bufferSizeDesc": "越大越抗网络抖动，但延迟越高喵~",
       "bufferLow": "低延迟喵~",

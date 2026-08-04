@@ -511,16 +511,19 @@
 
             <!-- Acoustic Echo Cancellation (AEC) -->
             <div class="bg-surface-bright rounded-2xl p-4 shadow-sm">
-              <div class="flex justify-between items-center" :class="isAecSupported ? 'cursor-pointer' : ''" @click="isAecSupported && (settings.aecEnabled = !settings.aecEnabled)">
+              <div class="flex justify-between items-center" :class="isAecSupported && aecRuntimeAvailable ? 'cursor-pointer' : ''" @click="isAecSupported && aecRuntimeAvailable && (settings.aecEnabled = !settings.aecEnabled)">
                 <div>
                   <span class="font-medium text-on-surface">{{ $t('settings.audioParams.aec') }}</span>
                   <p class="text-xs text-on-surface-variant mt-0.5">{{ $t('settings.audioParams.aecDesc') }}</p>
                   <p v-if="!isAecSupported" class="text-xs text-on-surface-variant mt-1 flex items-center gap-1">
                     <Ban class="w-3 h-3 shrink-0" /> {{ $t('settings.audioParams.aecUnavailable') }}
                   </p>
+                  <p v-else-if="!aecRuntimeAvailable" class="text-xs text-on-surface-variant mt-1 flex items-center gap-1">
+                    <Ban class="w-3 h-3 shrink-0" /> {{ $t('settings.audioParams.aecRuntimeUnavailable') }}
+                  </p>
                 </div>
                 <button
-                  :disabled="!isAecSupported"
+                  :disabled="!isAecSupported || !aecRuntimeAvailable"
                   class="group relative inline-flex h-8 w-14 shrink-0 cursor-pointer items-center rounded-full border-2 transition-colors duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"
                   :class="settings.aecEnabled ? 'border-primary bg-primary' : 'border-on-surface-variant bg-transparent hover:bg-on-surface-variant/10'"
                 >
@@ -553,7 +556,7 @@
               </div>
               <div v-if="settings.nsEnabled" class="space-y-4 pt-2 border-t border-surface-variant/20">
                 <div class="flex gap-2 mt-4">
-                  <button v-for="type in [{id: 'PureVox', label: 'PureVox (ONNX)'}, {id: 'Ulunas', label: 'Ulunas (ONNX)'}, {id: 'RNNoise', label: 'RNNoise'}, {id: 'Speexdsp', label: 'Speexdsp'}]" :key="type.id"
+                  <button v-for="type in [{id: 'PureVox', label: 'PureVox (ONNX)'}, {id: 'RNNoise', label: 'RNNoise'}, {id: 'Speexdsp', label: 'Speexdsp'}]" :key="type.id"
                           @click="settings.nsType = type.id"
                           class="px-3 py-1 rounded-full text-xs font-medium transition-colors"
                           :class="settings.nsType === type.id ? 'bg-primary text-on-primary' : 'bg-surface-container text-on-surface'">
@@ -1029,11 +1032,13 @@ const hasVBCable = computed(() => audioDevices.value.some(d => d.toLowerCase().i
 const hasBlackHole = computed(() => audioDevices.value.some(d => d.toLowerCase().includes('blackhole')));
 const isMacOS = typeof navigator !== 'undefined' && /Mac/.test(navigator.platform || navigator.userAgent) && !/iPhone|iPad|iPod/.test(navigator.userAgent);
 const isLinux = typeof navigator !== 'undefined' && /Linux/.test(navigator.platform || navigator.userAgent) && !/Android/.test(navigator.userAgent);
-const isAecSupported = !isMacOS && !isLinux;
+const isAecSupported = !isMacOS;
+const aecRuntimeAvailable = ref(true);
 const pipewireStatus = ref<{ available: boolean; setup: boolean; device_exists: boolean }>({ available: false, setup: false, device_exists: false });
 const vbcableInstalling = ref(false);
 const vbcableInstallProgress = ref('');
 let unlistenVbcableProgress: UnlistenFn | null = null;
+let unlistenAecStatus: UnlistenFn | null = null;
 
 interface BlackHoleStatus {
   installed: boolean;
@@ -1272,6 +1277,9 @@ onMounted(async () => {
   unlistenVbcableProgress = await listen<string>('vbcable-install-progress', (event) => {
     vbcableInstallProgress.value = event.payload;
   });
+  unlistenAecStatus = await listen<{ available: boolean; enabled: boolean; reason?: string | null }>('aec-status-changed', (event) => {
+    aecRuntimeAvailable.value = event.payload.available;
+  });
   checkBlackHoleStatus();
 });
 
@@ -1293,6 +1301,7 @@ onUnmounted(() => {
   isMounted = false;
   stopAudioMonitoring();
   if (unlistenVbcableProgress) unlistenVbcableProgress();
+  if (unlistenAecStatus) unlistenAecStatus();
 });
 
 const fetchDevices = async () => {
@@ -1305,37 +1314,38 @@ const fetchDevices = async () => {
   checkPipeWireStatus();
 };
 
+function loadLocalAudioSettings() {
+  const saved = localStorage.getItem('micyou_audio_settings');
+  if (!saved) return;
+
+  try {
+    Object.assign(settings, JSON.parse(saved));
+  } catch (error) {
+    console.error('Failed to parse settings', error);
+  }
+}
+
 const loadSettings = async () => {
   // Prefer the shared settings.json (written by update_audio_settings, also used
   // by the CLI) so GUI and CLI stay in sync; localStorage stays as a fallback.
   try {
     const backend = await invoke<Record<string, unknown>>('get_audio_settings');
-    if (backend && Object.keys(backend).length > 0) {
+    if (Object.keys(backend).length > 0) {
       Object.assign(settings, backend);
       localStorage.setItem('micyou_audio_settings', JSON.stringify(settings));
     } else {
-      const saved = localStorage.getItem('micyou_audio_settings');
-      if (saved) {
-        try {
-          Object.assign(settings, JSON.parse(saved));
-        } catch (e) {
-          console.error("Failed to parse settings", e);
-        }
-      }
+      loadLocalAudioSettings();
     }
-  } catch (e) {
-    console.error("get_audio_settings failed, using localStorage", e);
-    const saved = localStorage.getItem('micyou_audio_settings');
-    if (saved) {
-      try {
-        Object.assign(settings, JSON.parse(saved));
-      } catch (err) {
-        console.error("Failed to parse settings", err);
-      }
-    }
+  } catch (error) {
+    console.error('get_audio_settings failed, using localStorage', error);
+    loadLocalAudioSettings();
   }
 
-  // AEC 仅在 Windows 可用；其他平台强制禁用并从链路中移除，可用平台强制置顶
+  if (!['PureVox', 'RNNoise', 'Speexdsp'].includes(settings.nsType)) {
+    settings.nsType = 'PureVox';
+  }
+
+  // AEC 在 Linux/Windows 可用，在 macOS 禁用；可用平台强制置顶
   const savedChain = settings.processingChain ?? [];
   settings.processingChain = isAecSupported
     ? ['AEC', ...savedChain.filter((i) => i !== 'AEC')]
