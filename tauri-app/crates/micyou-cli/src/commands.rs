@@ -1,3 +1,5 @@
+use std::process::exit;
+
 use crate::config;
 use micyou_audio::dsp::AudioDspSettings;
 use tauri_app_lib::mode_lock as lock;
