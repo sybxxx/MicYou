@@ -10,6 +10,12 @@ use crate::udp_server::ActiveAudioSession;
 use micyou_audio::AecFailure;
 
 const NETWORK_TASK_JOIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+// Keep the live path bounded to roughly a few hundred milliseconds of Android
+// audio instead of allowing a transient DSP stall to turn into seconds of stale
+// audio. UDP drops new packets when this queue is full instead of retaining an
+// unbounded backlog of stale audio.
+const AUDIO_EVENT_CHANNEL_CAPACITY: usize = 32;
+const AUDIO_OUTPUT_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(1500);
 
 #[derive(Serialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -357,9 +363,10 @@ pub async fn start_server_inner(
     }
 
     let resolved_output_device = output_device;
-    // Bound queued latency: Android packets are ~7 ms, so 128 slots provide ample
-    // scheduling headroom without retaining seconds of stale audio.
-    let (audio_tx, mut audio_rx) = tokio::sync::mpsc::channel(128);
+    // Bound queued latency: Android packets are normally ~7-14 ms, so 32 slots
+    // retain enough short-term jitter headroom without retaining seconds of stale
+    // audio when DSP or the output device briefly falls behind.
+    let (audio_tx, mut audio_rx) = tokio::sync::mpsc::channel(AUDIO_EVENT_CHANNEL_CAPACITY);
 
     // Start audio output pipeline (shared by all modes)
     let events_audio = events.clone();
@@ -452,8 +459,13 @@ pub async fn start_server_inner(
         loop {
             // Idle heartbeat every 500ms: with no device session the loopback
             // capture stream stays stopped (biggest idle CPU win).
-            match audio_rx.try_recv() {
-                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => break,
+            let should_stop = match audio_rx.try_recv() {
+                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                    // Network tasks are joined before this receiver disconnects. Any
+                    // packets already accepted by the server must still reach the
+                    // virtual microphone before the output stream is dropped.
+                    true
+                }
                 Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
                     // Poll fast (10ms) while a session is active: audio packets
                     // can arrive after a silence gap and must not sit in the
@@ -466,6 +478,7 @@ pub async fn start_server_inner(
                     } else {
                         500
                     }));
+                    false
                 }
                 Ok(event) => {
                     audio_manager.set_monitoring(
@@ -486,7 +499,6 @@ pub async fn start_server_inner(
                                 );
                             }
                             jb.prepare_transport_session_epoch(expected, epoch);
-                            continue;
                         }
                         AudioStreamEvent::Packet { packet, epoch } => {
                             audio_received_for_session = true;
@@ -497,151 +509,158 @@ pub async fn start_server_inner(
                             jb.push_epoch(packet, epoch);
                         }
                     }
-                    let packets: Vec<_> = std::iter::from_fn(|| jb.pop()).collect();
+                    false
+                }
+            };
 
-                    for ordered_packet in packets {
-                        if let Some(audio_data) = ordered_packet.audio_packet {
-                            let capacity = match audio_data.audio_format {
-                                2 => audio_data.buffer.len() / 2,
-                                3 => audio_data.buffer.len(),
-                                4 => audio_data.buffer.len() / 4,
-                                6 => audio_data.buffer.len() / 3,
-                                _ => 0,
-                            };
-                            pcm_f32.clear();
-                            pcm_f32.reserve(capacity);
-                            match audio_data.audio_format {
-                                2 => {
-                                    for chunk in audio_data.buffer.chunks_exact(2) {
-                                        let sample_i16 = i16::from_le_bytes([chunk[0], chunk[1]]);
-                                        pcm_f32.push(sample_i16 as f32 / 32768.0);
+            let packets: Vec<_> = if should_stop {
+                jb.drain()
+            } else {
+                std::iter::from_fn(|| jb.pop()).collect()
+            };
+            for ordered_packet in packets {
+                if let Some(audio_data) = ordered_packet.audio_packet {
+                    let capacity = match audio_data.audio_format {
+                        2 => audio_data.buffer.len() / 2,
+                        3 => audio_data.buffer.len(),
+                        4 => audio_data.buffer.len() / 4,
+                        6 => audio_data.buffer.len() / 3,
+                        _ => 0,
+                    };
+                    pcm_f32.clear();
+                    pcm_f32.reserve(capacity);
+                    match audio_data.audio_format {
+                        2 => {
+                            for chunk in audio_data.buffer.chunks_exact(2) {
+                                let sample_i16 = i16::from_le_bytes([chunk[0], chunk[1]]);
+                                pcm_f32.push(sample_i16 as f32 / 32768.0);
+                            }
+                        }
+                        3 => {
+                            for &byte in &audio_data.buffer {
+                                let sample_f32 = (byte as f32 - 128.0) / 128.0;
+                                pcm_f32.push(sample_f32);
+                            }
+                        }
+                        4 => {
+                            for chunk in audio_data.buffer.chunks_exact(4) {
+                                let sample_f32 =
+                                    f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+                                pcm_f32.push(sample_f32);
+                            }
+                        }
+                        6 => {
+                            for chunk in audio_data.buffer.chunks_exact(3) {
+                                let sample24 = (chunk[0] as i32)
+                                    | ((chunk[1] as i32) << 8)
+                                    | ((chunk[2] as i8 as i32) << 16);
+                                let sample_f32 = (sample24 as f32) / 8388608.0;
+                                pcm_f32.push(sample_f32);
+                            }
+                        }
+                        _ => {
+                            eprintln!("Unsupported audio format: {}", audio_data.audio_format);
+                        }
+                    }
+                    if !pcm_f32.is_empty() {
+                        let channels = audio_data.channel_count as usize;
+                        let sample_rate = audio_data.sample_rate as u32;
+
+                        if sample_rate > 0 && sample_rate != 48000 {
+                            if current_input_sample_rate != sample_rate {
+                                match micyou_audio::RubatoResampler::new(
+                                    sample_rate,
+                                    48000,
+                                    channels.max(1),
+                                ) {
+                                    Ok(res) => {
+                                        input_resampler = Some(res);
+                                        current_input_sample_rate = sample_rate;
                                     }
-                                }
-                                3 => {
-                                    for &byte in &audio_data.buffer {
-                                        let sample_f32 = (byte as f32 - 128.0) / 128.0;
-                                        pcm_f32.push(sample_f32);
+                                    Err(e) => {
+                                        eprintln!("Failed to create resampler: {}", e);
+                                        input_resampler = None;
+                                        current_input_sample_rate = 48000;
                                     }
-                                }
-                                4 => {
-                                    for chunk in audio_data.buffer.chunks_exact(4) {
-                                        let sample_f32 = f32::from_le_bytes([
-                                            chunk[0], chunk[1], chunk[2], chunk[3],
-                                        ]);
-                                        pcm_f32.push(sample_f32);
-                                    }
-                                }
-                                6 => {
-                                    for chunk in audio_data.buffer.chunks_exact(3) {
-                                        let sample24 = (chunk[0] as i32)
-                                            | ((chunk[1] as i32) << 8)
-                                            | ((chunk[2] as i8 as i32) << 16);
-                                        let sample_f32 = (sample24 as f32) / 8388608.0;
-                                        pcm_f32.push(sample_f32);
-                                    }
-                                }
-                                _ => {
-                                    eprintln!(
-                                        "Unsupported audio format: {}",
-                                        audio_data.audio_format
-                                    );
                                 }
                             }
-                            if !pcm_f32.is_empty() {
-                                let channels = audio_data.channel_count as usize;
-                                let sample_rate = audio_data.sample_rate as u32;
+                            if let Some(ref mut resampler) = input_resampler {
+                                resampler.resample(
+                                    &pcm_f32,
+                                    channels.max(1),
+                                    &mut resample_out_buf,
+                                );
+                                pcm_f32.clear();
+                                pcm_f32.extend_from_slice(&resample_out_buf);
+                            }
+                        } else {
+                            input_resampler = None;
+                            current_input_sample_rate = 48000;
+                        }
 
-                                if sample_rate > 0 && sample_rate != 48000 {
-                                    if current_input_sample_rate != sample_rate {
-                                        match micyou_audio::RubatoResampler::new(
-                                            sample_rate,
-                                            48000,
-                                            channels.max(1),
-                                        ) {
-                                            Ok(res) => {
-                                                input_resampler = Some(res);
-                                                current_input_sample_rate = sample_rate;
-                                            }
-                                            Err(e) => {
-                                                eprintln!("Failed to create resampler: {}", e);
-                                                input_resampler = None;
-                                                current_input_sample_rate = 48000;
-                                            }
-                                        }
-                                    }
-                                    if let Some(ref mut resampler) = input_resampler {
-                                        resampler.resample(
-                                            &pcm_f32,
-                                            channels.max(1),
-                                            &mut resample_out_buf,
-                                        );
-                                        pcm_f32.clear();
-                                        pcm_f32.extend_from_slice(&resample_out_buf);
-                                    }
-                                } else {
-                                    input_resampler = None;
-                                    current_input_sample_rate = 48000;
-                                }
+                        let queued_samples = audio_manager.queued_samples();
+                        let queued_ms = if channels > 0 {
+                            (queued_samples as f64 / channels as f64) / 48.0
+                        } else {
+                            0.0
+                        };
 
-                                let queued_samples = audio_manager.queued_samples();
-                                let queued_ms = if channels > 0 {
-                                    (queued_samples as f64 / channels as f64) / 48.0
-                                } else {
-                                    0.0
-                                };
+                        // Web mode: skip DSP for now, output raw audio directly
+                        let processed_rms = if is_web_mode {
+                            let sum: f32 = pcm_f32.iter().map(|x| x * x).sum();
+                            (sum / pcm_f32.len() as f32).sqrt()
+                        } else {
+                            // Read speaker loopback for AEC far-end reference.
+                            // This captures the ACTUAL speaker output (WASAPI/BlackHole/PipeWire),
+                            // which is the true echo source the phone mic picks up.
+                            // Feed one mono reference sample for each near-end frame.
+                            // Matching the processed frame count prevents drift when
+                            // packet sizes or input sample rates vary.
+                            let near_frames = pcm_f32.len() / channels.max(1);
+                            if let Some(far_data) = loopback
+                                .as_ref()
+                                .filter(|capture| capture.is_active())
+                                .map(|capture| capture.read(near_frames))
+                            {
+                                dsp_processor.set_far_end_audio(&far_data);
+                            }
+                            let (_raw, processed) =
+                                dsp_processor.process(&mut pcm_f32, channels.max(1), queued_ms);
+                            if let Some(reason) = dsp_processor.take_aec_failure() {
+                                disable_aec_runtime(
+                                    &mut aec_runtime_available,
+                                    &events_audio,
+                                    reason,
+                                );
+                            }
+                            processed
+                        };
 
-                                // Web mode: skip DSP for now, output raw audio directly
-                                let processed_rms = if is_web_mode {
-                                    let sum: f32 = pcm_f32.iter().map(|x| x * x).sum();
-                                    (sum / pcm_f32.len() as f32).sqrt()
-                                } else {
-                                    // Read speaker loopback for AEC far-end reference.
-                                    // This captures the ACTUAL speaker output (WASAPI/BlackHole/PipeWire),
-                                    // which is the true echo source the phone mic picks up.
-                                    // Feed one mono reference sample for each near-end frame.
-                                    // Matching the processed frame count prevents drift when
-                                    // packet sizes or input sample rates vary.
-                                    let near_frames = pcm_f32.len() / channels.max(1);
-                                    if let Some(far_data) = loopback
-                                        .as_ref()
-                                        .filter(|capture| capture.is_active())
-                                        .map(|capture| capture.read(near_frames))
-                                    {
-                                        dsp_processor.set_far_end_audio(&far_data);
-                                    }
-                                    let (_raw, processed) = dsp_processor.process(
-                                        &mut pcm_f32,
-                                        channels.max(1),
-                                        queued_ms,
-                                    );
-                                    if let Some(reason) = dsp_processor.take_aec_failure() {
-                                        disable_aec_runtime(
-                                            &mut aec_runtime_available,
-                                            &events_audio,
-                                            reason,
-                                        );
-                                    }
-                                    processed
-                                };
+                        audio_manager.push_audio_data(&pcm_f32, channels.max(1));
 
-                                audio_manager.push_audio_data(&pcm_f32, channels.max(1));
+                        frame_counter = frame_counter.wrapping_add(1);
+                        if frame_counter.is_multiple_of(6) {
+                            let level = (processed_rms * 500.0).min(100.0) as u32;
+                            events_audio.audio_level(level);
 
-                                frame_counter = frame_counter.wrapping_add(1);
-                                if frame_counter.is_multiple_of(6) {
-                                    let level = (processed_rms * 500.0).min(100.0) as u32;
-                                    events_audio.audio_level(level);
-
-                                    if spectrum_streaming_enabled
-                                        .load(std::sync::atomic::Ordering::Acquire)
-                                    {
-                                        let (raw_spec, proc_spec) = dsp_processor.get_spectrums();
-                                        events_audio.audio_spectrum(raw_spec, proc_spec);
-                                    }
-                                }
+                            if spectrum_streaming_enabled.load(std::sync::atomic::Ordering::Acquire)
+                            {
+                                let (raw_spec, proc_spec) = dsp_processor.get_spectrums();
+                                events_audio.audio_spectrum(raw_spec, proc_spec);
                             }
                         }
                     }
                 }
+            }
+
+            if should_stop {
+                if !audio_manager.wait_for_output_drain(AUDIO_OUTPUT_DRAIN_TIMEOUT) {
+                    log::warn!(
+                        "[Audio] Output drain timed out after {:?}; dropping remaining samples",
+                        AUDIO_OUTPUT_DRAIN_TIMEOUT
+                    );
+                }
+                break;
             }
         }
 

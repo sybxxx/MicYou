@@ -6,6 +6,7 @@ use rubato::audioadapter_buffers::owned::InterleavedOwned;
 use rubato::{Async, FixedAsync, PolynomialDegree, Resampler};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 const BUFFER_HEADROOM_MS: usize = 300;
 const MS_PER_SECOND: usize = 1000;
@@ -577,6 +578,21 @@ impl AudioOutputManager {
         } else {
             0
         }
+    }
+
+    /// Give the cpal callback a bounded opportunity to play samples that were
+    /// accepted before the network session ended. Dropping the stream
+    /// immediately makes the final part of an utterance invisible to programs
+    /// reading the virtual microphone.
+    pub fn wait_for_output_drain(&self, timeout: Duration) -> bool {
+        let deadline = std::time::Instant::now() + timeout;
+        while self.queued_samples() > 0 {
+            if std::time::Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        true
     }
 }
 

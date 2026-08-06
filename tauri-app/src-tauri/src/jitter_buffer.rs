@@ -289,6 +289,51 @@ impl JitterBuffer {
         None
     }
 
+    /// Return every playable packet that is still buffered during shutdown.
+    ///
+    /// Normal playback waits for the prebuffer threshold and is conservative
+    /// about short gaps so that late FEC packets can recover them. Once the
+    /// network has ended, waiting for more packets would discard the tail of an
+    /// utterance, so the remaining gap is skipped and the buffered packets are
+    /// emitted in sequence order.
+    pub fn drain(&mut self) -> Vec<AudioPacketMessageOrdered> {
+        if !self.initialized {
+            return Vec::new();
+        }
+
+        self.prebuffered = true;
+        let mut packets = Vec::new();
+        loop {
+            if let Some(packet) = self.pop() {
+                packets.push(packet);
+                continue;
+            }
+
+            if self.expected_sequence_number != i32::MAX {
+                if let Some(recovered) = self.try_fec_recovery(self.expected_sequence_number) {
+                    self.expected_sequence_number += 1;
+                    packets.push(recovered);
+                    continue;
+                }
+            }
+
+            let Some(highest) = self.buffer.keys().next_back().copied() else {
+                break;
+            };
+            if highest < self.expected_sequence_number || self.expected_sequence_number == i32::MAX
+            {
+                break;
+            }
+
+            // At shutdown there will be no later packet to confirm a gap. Drop
+            // the missing sequence and continue draining the packets we have.
+            self.expected_sequence_number += 1;
+        }
+
+        self.reset();
+        packets
+    }
+
     fn remember_played_packet(&mut self, packet: &AudioPacketMessageOrdered) {
         if packet.audio_packet.is_none() {
             return;
@@ -524,6 +569,47 @@ mod tests {
         assert_eq!(jitter.pop().unwrap().sequence_number, 0);
         assert_eq!(jitter.current_session_id, 202);
         assert!(jitter.prebuffered);
+    }
+
+    #[test]
+    fn drain_releases_tail_before_prebuffer_threshold() {
+        let mut jitter = JitterBuffer::new(12);
+        jitter.prepare_transport_session(ExpectedAudioSession::Bound(101));
+        for sequence in 0..3 {
+            jitter.push(packet(sequence, 101));
+        }
+
+        assert!(jitter.pop().is_none());
+        let drained = jitter.drain();
+
+        assert_eq!(
+            drained
+                .iter()
+                .map(|packet| packet.sequence_number)
+                .collect::<Vec<_>>(),
+            vec![0, 1, 2]
+        );
+        assert!(!jitter.initialized);
+    }
+
+    #[test]
+    fn drain_uses_available_fec_for_a_short_tail_gap() {
+        let mut jitter = JitterBuffer::new(3);
+        jitter.prepare_transport_session(ExpectedAudioSession::Bound(101));
+        jitter.push(packet(0, 101));
+        jitter.push(packet(2, 101));
+        jitter.push(fec_packet(3, 0, 0..3, 101));
+
+        let drained = jitter.drain();
+
+        assert_eq!(
+            drained
+                .iter()
+                .map(|packet| packet.sequence_number)
+                .collect::<Vec<_>>(),
+            vec![0, 1, 2]
+        );
+        assert_eq!(drained[1].audio_packet.as_ref().unwrap().buffer, vec![1]);
     }
 
     #[test]
