@@ -64,6 +64,14 @@ fn apply_macos_vibrancy(_: &tauri::WebviewWindow) {}
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // Reject duplicate GUI launches before they can bind the audio server ports.
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }))
         .manage(server::ServerState {
             lifecycle_gate: server::ServerLifecycleGate::default(),
             lifecycle: Arc::new(Mutex::new(server::ServerLifecycleState::default())),

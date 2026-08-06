@@ -23,6 +23,7 @@ micyou-audio = { path = "../crates/micyou-audio", features = ["dsp", "noise-supp
 
 # Tauri
 tauri = { version = "2", features = ["macos-private-api", "tray-icon", "image-png"] }
+tauri-plugin-single-instance = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-autostart = "2"
 tauri-plugin-log = "2.8.0"
