@@ -6,6 +6,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -125,6 +126,15 @@ class AudioStreamViewModel : ViewModel() {
     private val settings = SettingsFactory.getSettings()
     private var isStartStreamRequestPending = false
     private var isStopStreamRequestPending = false
+    private var userWantsStreaming = false
+    private var hasEstablishedStream = false
+    private var autoReconnectJob: Job? = null
+
+    private companion object {
+        const val AUTO_RECONNECT_MAX_ATTEMPTS = 12
+        const val AUTO_RECONNECT_INITIAL_DELAY_MS = 1_000L
+        const val AUTO_RECONNECT_MAX_DELAY_MS = 30_000L
+    }
 
     init {
         loadSettings()
@@ -258,7 +268,18 @@ class AudioStreamViewModel : ViewModel() {
     private fun setupAudioEngineObservers() {
         auxiliaryScope.launch {
             _audioEngine.streamState.collect { state ->
+                val previousState = _uiState.value.streamState
                 _uiState.update { it.copy(streamState = state) }
+                if (state == StreamState.Streaming) {
+                    hasEstablishedStream = true
+                } else if (
+                    state == StreamState.Error &&
+                    previousState == StreamState.Streaming &&
+                    userWantsStreaming &&
+                    _uiState.value.mode == ConnectionMode.Wifi
+                ) {
+                    scheduleAutoReconnect()
+                }
                 // 当停止时清空历史记录
                 if (state == StreamState.Idle) {
                     audioLevelHistory.clear()
@@ -366,6 +387,9 @@ class AudioStreamViewModel : ViewModel() {
             return
         }
 
+        userWantsStreaming = true
+        autoReconnectJob?.cancel()
+        autoReconnectJob = null
         isStartStreamRequestPending = true
         auxiliaryScope.launch {
             try {
@@ -376,7 +400,7 @@ class AudioStreamViewModel : ViewModel() {
         }
     }
 
-    private suspend fun startStreamInternal() {
+    private suspend fun startStreamInternal(automaticRetry: Boolean = false) {
         Logger.i("AudioStreamViewModel", "Starting stream")
         val mode = _uiState.value.mode
         val ip = _uiState.value.ipAddress
@@ -450,7 +474,7 @@ class AudioStreamViewModel : ViewModel() {
                 it.copy(
                     streamState = StreamState.Error,
                     errorMessage = errorDetails.localizedMessage,
-                    showErrorDialog = true,
+                    showErrorDialog = !automaticRetry,
                     errorDetails = errorDetails
                 )
             }
@@ -458,8 +482,58 @@ class AudioStreamViewModel : ViewModel() {
         }
     }
 
+    private fun scheduleAutoReconnect() {
+        if (
+            !userWantsStreaming ||
+            _uiState.value.mode != ConnectionMode.Wifi ||
+            autoReconnectJob?.isActive == true
+        ) {
+            return
+        }
+
+        autoReconnectJob = auxiliaryScope.launch {
+            var attempt = 0
+            var delayMs = AUTO_RECONNECT_INITIAL_DELAY_MS
+            try {
+                while (
+                    userWantsStreaming &&
+                    attempt < AUTO_RECONNECT_MAX_ATTEMPTS &&
+                    _uiState.value.streamState == StreamState.Error
+                ) {
+                    delay(delayMs)
+                    if (!userWantsStreaming) break
+
+                    attempt++
+                    Logger.i(
+                        "AudioStreamViewModel",
+                        "Retrying Wi-Fi stream after connection loss (attempt $attempt/$AUTO_RECONNECT_MAX_ATTEMPTS)"
+                    )
+                    isStartStreamRequestPending = true
+                    try {
+                        startStreamInternal(automaticRetry = true)
+                    } finally {
+                        isStartStreamRequestPending = false
+                    }
+
+                    if (_uiState.value.streamState == StreamState.Streaming) return@launch
+                    delayMs = (delayMs * 2).coerceAtMost(AUTO_RECONNECT_MAX_DELAY_MS)
+                }
+
+                if (userWantsStreaming && _uiState.value.streamState != StreamState.Streaming) {
+                    _uiState.update { it.copy(showErrorDialog = true) }
+                }
+            } finally {
+                autoReconnectJob = null
+            }
+        }
+    }
+
     fun stopStream() {
         Logger.i("AudioStreamViewModel", "Stopping stream")
+        userWantsStreaming = false
+        hasEstablishedStream = false
+        autoReconnectJob?.cancel()
+        autoReconnectJob = null
         if (isStopStreamRequestPending) {
             Logger.d("AudioStreamViewModel", "Stop stream request ignored: stop already pending")
             return
@@ -746,6 +820,9 @@ class AudioStreamViewModel : ViewModel() {
     fun close(): Job = synchronized(closeLock) {
         closeJob?.let { return@synchronized it }
         closed.set(true)
+        userWantsStreaming = false
+        autoReconnectJob?.cancel()
+        autoReconnectJob = null
         discoveryManager.stopDiscovery()
         val engineCloseJob = _audioEngine.close()
         auxiliaryScope.cancel()

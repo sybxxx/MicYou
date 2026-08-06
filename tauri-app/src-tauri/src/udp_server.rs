@@ -172,6 +172,7 @@ pub async fn start_udp_server(
                             };
                             let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
                             stats.mark_udp_received(now);
+                            stats.mark_audio_received(now);
 
                             let seq = audio_packet_ordered.sequence_number;
                             if let Some(l_seq) = last_seq {

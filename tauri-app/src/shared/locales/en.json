@@ -160,7 +160,8 @@
     },
     "pocketMode": {
       "title": "Pocket Mode",
-      "desc": "Compact horizontal bar layout, other controls moved to popup menu"
+      "desc": "Compact horizontal bar layout, other controls moved to popup menu",
+      "exit": "Return to full window"
     },
     "uiStyle": {
       "title": "UI Style",

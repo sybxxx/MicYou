@@ -3,7 +3,7 @@ import { ref, computed, onUnmounted } from 'vue';
 import { getCurrentWindow, LogicalPosition, LogicalSize } from '@tauri-apps/api/window';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import {
-  Link, Unlink, RefreshCw, Minus, X,
+  Link, Unlink, RefreshCw, Minus, X, Maximize2,
   Globe, ChevronDown, MoreHorizontal,
   VolumeX, Volume2, Headphones, Loader2
 } from '@lucide/vue';
@@ -39,6 +39,7 @@ const emit = defineEmits([
   'toggleMonitoringEnabled',
   'toggleMonitoring',
   'openSettings',
+  'exitPocketMode',
   'update:popupOpen',
 ]);
 
@@ -260,6 +261,11 @@ onUnmounted(() => {
   destroyAllOverlays();
 });
 
+const exitPocketMode = async () => {
+  await hideAllOverlays();
+  emit('exitPocketMode');
+};
+
 defineExpose({ closePopup });
 </script>
 
@@ -329,6 +335,18 @@ defineExpose({ closePopup });
     </button>
 
     <!-- Separator -->
+    <div class="w-px h-4 bg-outline/20 flex-shrink-0 pointer-events-none" />
+
+    <!-- Return to full window -->
+    <button
+      @click="exitPocketMode"
+      class="w-8 h-8 rounded-lg flex items-center justify-center transition-all duration-300 hover:scale-110 active:scale-90 flex-shrink-0 hover:bg-surface-variant/50"
+      :title="$t('settings.pocketMode.exit')"
+      :aria-label="$t('settings.pocketMode.exit')"
+    >
+      <Maximize2 class="w-4 h-4 text-on-surface-variant" />
+    </button>
+
     <div class="w-px h-4 bg-outline/20 flex-shrink-0 pointer-events-none" />
 
     <!-- More Menu -->

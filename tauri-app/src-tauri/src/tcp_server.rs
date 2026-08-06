@@ -30,6 +30,7 @@ const MAX_CONCURRENT_CLIENTS: usize = 64;
 const FRAME_READ_TIMEOUT: Duration = Duration::from_secs(10);
 const FRAME_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 const CLIENT_SHUTDOWN_GRACE_PERIOD: Duration = Duration::from_millis(250);
+const AUDIO_STALL_TIMEOUT: Duration = Duration::from_secs(10);
 static NEXT_CONNECTION_ID: AtomicU64 = AtomicU64::new(1);
 
 #[cfg(windows)]
@@ -310,6 +311,84 @@ async fn clear_if_active(active: &SharedActiveConnection, connection_id: u64) ->
     }
 }
 
+fn audio_stalled(
+    now_ms: u64,
+    tcp_connected_ms: u64,
+    last_audio_ms: u64,
+    client_muted: bool,
+) -> bool {
+    if client_muted || tcp_connected_ms == 0 {
+        return false;
+    }
+    let baseline = if last_audio_ms == 0 {
+        tcp_connected_ms
+    } else {
+        last_audio_ms
+    };
+    now_ms.saturating_sub(baseline) > AUDIO_STALL_TIMEOUT.as_millis() as u64
+}
+
+fn heartbeat_stalled(now_ms: u64, tcp_connected_ms: u64, last_pong_ms: u64) -> bool {
+    if tcp_connected_ms == 0 {
+        return false;
+    }
+    let baseline = if last_pong_ms == 0 {
+        tcp_connected_ms
+    } else {
+        last_pong_ms
+    };
+    now_ms.saturating_sub(baseline) > AUDIO_STALL_TIMEOUT.as_millis() as u64
+}
+
+fn connection_stalled(
+    now_ms: u64,
+    tcp_connected_ms: u64,
+    last_audio_ms: u64,
+    last_pong_ms: u64,
+    client_muted: bool,
+) -> bool {
+    let audio_is_stalled = audio_stalled(now_ms, tcp_connected_ms, last_audio_ms, client_muted);
+    if !client_muted && last_audio_ms != 0 {
+        // Audio is a stronger liveness signal than pong for legacy clients that
+        // stream correctly but do not implement the newer heartbeat response.
+        return audio_is_stalled;
+    }
+    heartbeat_stalled(now_ms, tcp_connected_ms, last_pong_ms) || audio_is_stalled
+}
+
+async fn disconnect_stalled_session(
+    active_connection: &SharedActiveConnection,
+    active_audio_session: &SharedActiveAudioSession,
+    connection_id: u64,
+    events: &SharedEvents,
+) -> bool {
+    let connection = {
+        let mut active = active_connection.lock().await;
+        if active
+            .as_ref()
+            .is_some_and(|connection| connection.connection_id == connection_id)
+        {
+            active.take()
+        } else {
+            None
+        }
+    };
+
+    let Some(connection) = connection else {
+        return false;
+    };
+
+    connection.takeover_token.cancel();
+    force_close_socket(connection.raw_socket);
+    drop(connection.sender);
+    match active_audio_session.write() {
+        Ok(mut active) => *active = ActiveAudioSession::default(),
+        Err(poisoned) => *poisoned.into_inner() = ActiveAudioSession::default(),
+    }
+    events.device_disconnected();
+    true
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn handle_client(
     mut socket: TcpStream,
@@ -518,6 +597,9 @@ async fn handle_client(
 
     let stats_emit = stats.clone();
     let events_emit = events.clone();
+    let active_connection_monitor = active_connection.clone();
+    let active_audio_session_monitor = active_audio_session.clone();
+    let connection_id_monitor = connection_id;
     let monitor_task = tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_millis(1000));
         let mut warning_fired = false;
@@ -531,18 +613,32 @@ async fn handle_client(
                     .unwrap()
                     .as_millis() as u64;
                 let tcp_time = stats_emit.get_tcp_connected_time();
-                let last_udp = stats_emit.get_last_udp_time();
-                if tcp_time > 0 && now.saturating_sub(tcp_time) > 5000 {
-                    let time_since_udp = if last_udp == 0 {
-                        now.saturating_sub(tcp_time)
-                    } else {
-                        now.saturating_sub(last_udp)
-                    };
-                    if time_since_udp > 10000 && !warning_fired {
+                let last_audio = stats_emit.get_last_audio_time();
+                if connection_stalled(
+                    now,
+                    tcp_time,
+                    last_audio,
+                    stats_emit.get_last_pong_time(),
+                    stats_emit.is_client_muted(),
+                ) && !warning_fired
+                {
+                    log::warn!(
+                        "No audio packets received for {:?}; closing stale client session",
+                        AUDIO_STALL_TIMEOUT
+                    );
+                    if last_audio == 0 && !stats_emit.is_client_muted() {
                         events_emit.udp_audio_warning();
-                        warning_fired = true;
-                    } else if time_since_udp < 5000 && warning_fired {
-                        warning_fired = false;
+                    }
+                    warning_fired = true;
+                    if disconnect_stalled_session(
+                        &active_connection_monitor,
+                        &active_audio_session_monitor,
+                        connection_id_monitor,
+                        &events_emit,
+                    )
+                    .await
+                    {
+                        break;
                     }
                 }
             }
@@ -623,6 +719,10 @@ async fn handle_message(
         else {
             return Ok(());
         };
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
         let permit = tokio::select! {
             biased;
             _ = takeover_token.cancelled() => return Ok(()),
@@ -632,6 +732,7 @@ async fn handle_message(
             },
         };
         run_if_active(active_connection, takeover_token, connection_id, || {
+            stats.mark_audio_received(now);
             permit.send(AudioStreamEvent::Packet {
                 packet: audio,
                 epoch,
@@ -671,13 +772,19 @@ async fn handle_message(
         let rtt = now - pong.timestamp;
         if rtt >= 0 {
             run_if_active(active_connection, takeover_token, connection_id, || {
+                stats.mark_pong_received(now as u64);
                 stats.set_rtt(rtt)
             })
             .await;
         }
     }
     if let Some(mute) = msg.mute {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
         run_if_active(active_connection, takeover_token, connection_id, || {
+            stats.set_client_muted(mute.is_muted, now);
             println!("Received mute state: {}", mute.is_muted);
             events.mute_state_changed(mute.is_muted);
         })
@@ -721,6 +828,40 @@ mod tests {
             parse_frame_header(&header(MAX_CONTROL_PAYLOAD_LEN as i32)).unwrap(),
             MAX_CONTROL_PAYLOAD_LEN
         );
+    }
+
+    #[test]
+    fn audio_stall_watchdog_ignores_muted_clients() {
+        assert!(!audio_stalled(20_000, 1, 0, true));
+    }
+
+    #[test]
+    fn audio_stall_watchdog_uses_connection_time_until_first_packet() {
+        assert!(!audio_stalled(10_000, 1, 0, false));
+        assert!(audio_stalled(10_002, 1, 0, false));
+    }
+
+    #[test]
+    fn audio_stall_watchdog_recovers_after_a_packet() {
+        assert!(!audio_stalled(20_000, 1, 19_500, false));
+        assert!(audio_stalled(30_001, 1, 19_500, false));
+    }
+
+    #[test]
+    fn heartbeat_watchdog_detects_a_stale_control_channel() {
+        assert!(!heartbeat_stalled(10_000, 1, 9_500));
+        assert!(heartbeat_stalled(20_001, 1, 9_500));
+    }
+
+    #[test]
+    fn connection_watchdog_still_checks_heartbeat_while_muted() {
+        assert!(connection_stalled(20_001, 1, 0, 1, true));
+        assert!(!connection_stalled(20_001, 1, 0, 19_500, true));
+    }
+
+    #[test]
+    fn active_audio_keeps_legacy_clients_alive_without_pongs() {
+        assert!(!connection_stalled(20_001, 1, 19_500, 1, false));
     }
 
     #[tokio::test]

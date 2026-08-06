@@ -380,6 +380,7 @@ onUnmounted(() => {
         @toggleMonitoringEnabled="audio.toggleMonitoringEnabled"
         @toggleMonitoring="audio.toggleMonitoring"
         @openSettings="isSettingsOpen = true"
+        @exitPocketMode="pocketMode = false"
         @update:popupOpen="v => pocketPopupOpen = v"
       />
       </div>

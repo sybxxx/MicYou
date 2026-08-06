@@ -19,7 +19,10 @@ pub struct NetworkStats {
     pub jitter_bits: AtomicU64,
     pub loss_rate_bits: AtomicU64,
     pub last_udp_packet_time_ms: AtomicU64,
+    pub last_audio_packet_time_ms: AtomicU64,
     pub tcp_connected_time_ms: AtomicU64,
+    pub last_pong_time_ms: AtomicU64,
+    pub client_muted: AtomicU64,
     pub bitrate: AtomicU32,
     pub sample_rate: AtomicU32,
 }
@@ -32,7 +35,10 @@ impl Default for NetworkStats {
             jitter_bits: AtomicU64::new(0f64.to_bits()),
             loss_rate_bits: AtomicU64::new(0f64.to_bits()),
             last_udp_packet_time_ms: AtomicU64::new(0),
+            last_audio_packet_time_ms: AtomicU64::new(0),
             tcp_connected_time_ms: AtomicU64::new(0),
+            last_pong_time_ms: AtomicU64::new(0),
+            client_muted: AtomicU64::new(0),
             bitrate: AtomicU32::new(0),
             sample_rate: AtomicU32::new(0),
         }
@@ -80,9 +86,43 @@ impl NetworkStats {
 
     pub fn mark_tcp_connected(&self, time_ms: u64) {
         self.tcp_connected_time_ms.store(time_ms, Ordering::Relaxed);
+        self.last_udp_packet_time_ms.store(0, Ordering::Relaxed);
+        self.last_audio_packet_time_ms.store(0, Ordering::Relaxed);
+        self.last_pong_time_ms.store(0, Ordering::Relaxed);
+        self.client_muted.store(0, Ordering::Relaxed);
     }
     pub fn get_tcp_connected_time(&self) -> u64 {
         self.tcp_connected_time_ms.load(Ordering::Relaxed)
+    }
+
+    pub fn mark_pong_received(&self, time_ms: u64) {
+        self.last_pong_time_ms.store(time_ms, Ordering::Relaxed);
+    }
+
+    pub fn get_last_pong_time(&self) -> u64 {
+        self.last_pong_time_ms.load(Ordering::Relaxed)
+    }
+
+    pub fn mark_audio_received(&self, time_ms: u64) {
+        self.last_audio_packet_time_ms
+            .store(time_ms, Ordering::Relaxed);
+    }
+
+    pub fn get_last_audio_time(&self) -> u64 {
+        self.last_audio_packet_time_ms.load(Ordering::Relaxed)
+    }
+
+    pub fn set_client_muted(&self, muted: bool, time_ms: u64) {
+        self.client_muted.store(u64::from(muted), Ordering::Relaxed);
+        if !muted {
+            // Give the client a fresh grace period after unmuting, before the
+            // audio watchdog decides that the session is stalled.
+            self.mark_audio_received(time_ms);
+        }
+    }
+
+    pub fn is_client_muted(&self) -> bool {
+        self.client_muted.load(Ordering::Relaxed) != 0
     }
 
     pub fn set_audio_info(&self, sample_rate: u32, bitrate: u32) {
