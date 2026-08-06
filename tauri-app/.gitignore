@@ -24,3 +24,4 @@ src/generated/third-party-licenses.html
 *.sln
 *.sw?
 **/target
+target-ascii/
