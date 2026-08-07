@@ -10,6 +10,8 @@ import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlin.math.*
 
 /**
@@ -230,16 +232,15 @@ fun rememberWaveAnimation(
     phaseOffset: Float = 0f,
     durationMillis: Int = AnimationDefaults.WAVE_DURATION
 ): Float {
-    val transition = rememberInfiniteTransition(label = "WaveTransition")
-    return transition.animateFloat(
-        initialValue = 0f,
-        targetValue = 360f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "Wave"
-    ).value + phaseOffset
+    val duration = durationMillis.coerceAtLeast(1)
+    return produceState(phaseOffset, phaseOffset, duration) {
+        val startNanos = System.nanoTime()
+        while (isActive) {
+            val elapsedMillis = ((System.nanoTime() - startNanos) / 1_000_000L) % duration
+            value = phaseOffset + elapsedMillis.toFloat() / duration * 360f
+            delay(33L)
+        }
+    }.value
 }
 
 @Composable

@@ -37,10 +37,10 @@ class AudioLevelHistory(
      * 添加新样本
      * 按采样间隔控制添加频率，自动移除过期样本
      */
-    suspend fun addSample(levelData: AudioLevelData) {
+    suspend fun addSample(levelData: AudioLevelData): Boolean {
         val now = System.currentTimeMillis()
 
-        mutex.withLock {
+        return mutex.withLock {
             // 按采样间隔添加样本
             if (now - lastSampleTime >= sampleIntervalMs) {
                 samples.add(AudioLevelSample(
@@ -55,6 +55,9 @@ class AudioLevelHistory(
                 // 移除过期样本
                 val cutoffTime = now - (maxDurationSeconds * 1000L)
                 samples.removeAll { it.timestamp < cutoffTime }
+                true
+            } else {
+                false
             }
         }
     }

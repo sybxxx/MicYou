@@ -3,7 +3,6 @@ package com.lanrhyme.micyou.ui
 import com.lanrhyme.micyou.R
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.animateColor
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
@@ -91,7 +90,6 @@ import androidx.compose.ui.unit.dp
 import com.lanrhyme.micyou.animation.EasingFunctions
 import com.lanrhyme.micyou.animation.rememberBreathAnimation
 import com.lanrhyme.micyou.animation.rememberGlowAnimation
-import com.lanrhyme.micyou.animation.rememberPulseAnimation
 import com.lanrhyme.micyou.animation.rememberRotationAnimation
 import com.lanrhyme.micyou.animation.rememberWaveAnimation
 import dev.chrisbanes.haze.HazeState
@@ -325,25 +323,21 @@ private fun MobileHeaderSection(
                 }
                 
                 Column {
-                    // Animated gradient title
+                    // Use a finite transition when the stream state changes instead of
+                    // continuously repainting the title while the app is idle.
                     val color1 = MaterialTheme.colorScheme.primary
                     val color2 = MaterialTheme.colorScheme.tertiary
-                    val infiniteTransition = rememberInfiniteTransition(label = "MobileTitleColor")
-    val animatedColor by infiniteTransition.animateColor(
-                        initialValue = color1,
-                        targetValue = color2,
-                        animationSpec = infiniteRepeatable(
-                            animation = tween(4000, easing = LinearEasing),
-                            repeatMode = RepeatMode.Reverse
-                        ),
-                        label = "Color"
+                    val titleColor by animateColorAsState(
+                        targetValue = if (state.streamState == StreamState.Connecting) color2 else color1,
+                        animationSpec = tween(400),
+                        label = "MobileTitleColor"
                     )
                     
                     Text(
                         stringResource(R.string.appName),
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.ExtraBold,
-                        color = animatedColor
+                        color = titleColor
                     )
                     Text(
                         "${stringResource(R.string.ipLabel)}${"Client"}",
@@ -487,15 +481,20 @@ private fun ConnectionConfigCard(
                             onClick = { viewModel.restartDiscovery() },
                             modifier = Modifier.size(32.dp)
                         ) {
-                            val infiniteTransition = rememberInfiniteTransition()
-                            val rotation by infiniteTransition.animateFloat(
-                                initialValue = 0f,
-                                targetValue = 360f,
-                                animationSpec = infiniteRepeatable(
-                                    animation = tween(1000, easing = LinearEasing),
-                                    repeatMode = RepeatMode.Restart
-                                )
-                            )
+                            val rotation = if (state.isDiscovering) {
+                                val infiniteTransition = rememberInfiniteTransition(label = "DeviceDiscovery")
+                                infiniteTransition.animateFloat(
+                                    initialValue = 0f,
+                                    targetValue = 360f,
+                                    animationSpec = infiniteRepeatable(
+                                        animation = tween(1000, easing = LinearEasing),
+                                        repeatMode = RepeatMode.Restart
+                                    ),
+                                    label = "DeviceDiscoveryRotation"
+                                ).value
+                            } else {
+                                0f
+                            }
                             Icon(
                                 Icons.Filled.Refresh, null,
                                 modifier = Modifier
@@ -760,13 +759,10 @@ private fun MobileBottomBar(
                 },
                 animationSpec = tween(300)
             )
-            val dotPulse = if (state.streamState == StreamState.Streaming)
-                rememberPulseAnimation(0.8f, 1.2f, 1200) else 1f
-            
             Surface(
                 shape = CircleShape,
                 color = dotColor,
-                modifier = Modifier.size(8.dp).scale(dotPulse)
+                modifier = Modifier.size(8.dp)
             ) {}
         }
     }
@@ -858,6 +854,7 @@ private fun MobileMainButton(
     isConnecting: Boolean,
     viewModel: MainViewModel
 ) {
+    val isActive = isRunning || isConnecting
     val buttonSize by animateDpAsState(
         targetValue = if (isRunning) 100.dp else 80.dp,
         animationSpec = spring(
@@ -873,25 +870,34 @@ private fun MobileMainButton(
         },
         animationSpec = tween(400, easing = EasingFunctions.EaseInOutCubic)
     )
-    val infiniteTransition = rememberInfiniteTransition(label = "MobileButton")
-    val angle by infiniteTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = 360f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(1000, easing = LinearEasing)
-        ),
-        label = "MobileSpinner"
-    )
-    val glowAlpha by infiniteTransition.animateFloat(
-        initialValue = 0.25f,
-        targetValue = 0.55f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(1500, easing = EasingFunctions.EaseInOutCubic),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "BtnGlow"
-    )
-    val pulseScale = if (isRunning) rememberPulseAnimation(0.96f, 1.04f, 900) else 1f
+    val buttonTransition = if (isActive) {
+        rememberInfiniteTransition(label = "MobileButton")
+    } else {
+        null
+    }
+    val angle = if (buttonTransition != null) {
+        buttonTransition.animateFloat(
+            initialValue = 0f,
+            targetValue = 360f,
+            animationSpec = infiniteRepeatable(animation = tween(1000, easing = LinearEasing)),
+            label = "MobileSpinner"
+        ).value
+    } else {
+        0f
+    }
+    val glowAlpha = if (buttonTransition != null) {
+        buttonTransition.animateFloat(
+            initialValue = 0.25f,
+            targetValue = 0.55f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(1500, easing = EasingFunctions.EaseInOutCubic),
+                repeatMode = RepeatMode.Reverse
+            ),
+            label = "BtnGlow"
+        ).value
+    } else {
+        0.25f
+    }
     
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
@@ -908,8 +914,8 @@ private fun MobileMainButton(
         modifier = Modifier
             .size(buttonSize + 24.dp)
             .graphicsLayer {
-                scaleX = pressScale * pulseScale
-                scaleY = pressScale * pulseScale
+                scaleX = pressScale
+                scaleY = pressScale
             }
     ) {
         // Glow ring behind button

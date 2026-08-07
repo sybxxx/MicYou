@@ -266,6 +266,7 @@ class AudioEngine constructor() {
         private const val HEARTBEAT_TIMEOUT_MS = 5000L
         private const val AUDIO_READ_STALL_TIMEOUT_MS = 5000L
         private const val AUDIO_READ_IDLE_DELAY_MS = 5L
+        private const val UI_AUDIO_LEVEL_UPDATE_INTERVAL_MS = 75L
         private const val STOP_TIMEOUT_MS = 5000L
         private const val CLOSE_FINAL_WAIT_MS = 15000L
         private const val FEC_GROUP_SIZE = 12 // 每 12 个包生成一个 FEC 包（约 87ms @44100Hz）
@@ -836,6 +837,7 @@ class AudioEngine constructor() {
                         var fecGroupStartSeq = 0
                         sessionLastPingReceivedTime = System.currentTimeMillis()
                         var lastSuccessfulAudioRead = SystemClock.elapsedRealtime()
+                        var lastUiLevelUpdateAt = 0L
 
                         while (isActive) {
                             if (writerJob.isCancelled || writerJob.isCompleted) throw Exception("Writer job failed")
@@ -875,9 +877,15 @@ class AudioEngine constructor() {
                             }
 
                             if (readBytes > 0) {
-                                val levelData = calculateAudioLevelData(audioData, resolvedAudioFormat.captureFormat)
-                                _audioLevels.value = levelData.rms
-                                _audioLevelData.value = levelData
+                                val levelNow = SystemClock.elapsedRealtime()
+                                if (lastUiLevelUpdateAt == 0L ||
+                                    levelNow - lastUiLevelUpdateAt >= UI_AUDIO_LEVEL_UPDATE_INTERVAL_MS
+                                ) {
+                                    val levelData = calculateAudioLevelData(audioData, resolvedAudioFormat.captureFormat)
+                                    _audioLevels.value = levelData.rms
+                                    _audioLevelData.value = levelData
+                                    lastUiLevelUpdateAt = levelNow
+                                }
 
                                 if (!_isMuted.value) {
                                     val packet = AudioPacketMessage(

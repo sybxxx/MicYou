@@ -292,7 +292,7 @@ pub async fn start_server(
     output_device: Option<String>,
 ) -> Result<String, String> {
     let events: crate::events::SharedEvents =
-        std::sync::Arc::new(crate::events::TauriEventSink(app_handle));
+        std::sync::Arc::new(crate::events::TauriEventSink::new(app_handle));
     // Reload shared settings.json before starting so CLI-side changes apply
     let file_settings = crate::app_config::load_dsp_settings();
     if let Ok(mut current) = state.dsp_settings.write() {
@@ -855,7 +855,7 @@ pub async fn start_server_inner(
 #[tauri::command]
 pub async fn stop_server(app: AppHandle, state: State<'_, ServerState>) -> Result<String, String> {
     let events: crate::events::SharedEvents =
-        std::sync::Arc::new(crate::events::TauriEventSink(app));
+        std::sync::Arc::new(crate::events::TauriEventSink::new(app));
     stop_server_inner(&state, events).await
 }
 

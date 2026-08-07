@@ -74,11 +74,8 @@ const startDrag = async (e: MouseEvent) => {
 
 // References to HTML elements for animations
 const centralBtnRef = ref<HTMLButtonElement | null>(null);
-const glowRef = ref<HTMLDivElement | null>(null);
-const statusDotRef = ref<HTMLDivElement | null>(null);
-
-let breatheAnim: ReturnType<typeof anime> | null = null;
-let dotPulseAnim: ReturnType<typeof anime> | null = null;
+const documentVisible = ref(typeof document === 'undefined' || document.visibilityState === 'visible');
+const visualsActive = computed(() => documentVisible.value && !win.isHidden.value);
 
 // App wizard and pocket mode settings
 const showOnboarding = ref(localStorage.getItem('micyou_onboarding_completed') !== 'true');
@@ -94,15 +91,19 @@ onClickOutside(ipMenuRef, () => {
 });
 
 // Close IP menu on window blur to maintain clean UI focus
+const handleWindowBlur = () => {
+  server.showIpMenu.value = false;
+};
+const handleDocumentVisibilityChange = () => {
+  documentVisible.value = document.visibilityState === 'visible';
+};
 onMounted(() => {
-  window.addEventListener('blur', () => {
-    server.showIpMenu.value = false;
-  });
+  window.addEventListener('blur', handleWindowBlur);
+  document.addEventListener('visibilitychange', handleDocumentVisibilityChange);
 });
 onUnmounted(() => {
-  window.removeEventListener('blur', () => {
-    server.showIpMenu.value = false;
-  });
+  window.removeEventListener('blur', handleWindowBlur);
+  document.removeEventListener('visibilitychange', handleDocumentVisibilityChange);
 });
 
 /**
@@ -285,58 +286,8 @@ const onCentralBtnLeave = () => {
   }
 };
 
-// Sets up dynamic breathing glow animation during active streams
-watchEffect(() => {
-  if (server.serverState.value === 'streaming' && glowRef.value) {
-    if (!breatheAnim) {
-      breatheAnim = anime({
-        targets: glowRef.value,
-        opacity: [0.3, 0.7],
-        scale: [1.2, 1.35],
-        duration: 2000,
-        direction: 'alternate',
-        loop: true,
-        easing: 'easeInOutSine',
-      });
-    }
-  } else {
-    if (breatheAnim) {
-      breatheAnim.pause();
-      breatheAnim = null;
-    }
-    if (glowRef.value) {
-      anime.set(glowRef.value, { opacity: 0.3, scale: 1.25 });
-    }
-  }
-});
-
-// Sets up pulse animation on bottom bar indicator during active streams
-watchEffect(() => {
-  if (server.serverState.value === 'streaming' && statusDotRef.value) {
-    if (!dotPulseAnim) {
-      dotPulseAnim = anime({
-        targets: statusDotRef.value,
-        scale: [1, 1.4, 1],
-        duration: 1500,
-        loop: true,
-        easing: 'easeInOutQuad',
-      });
-    }
-  } else {
-    if (dotPulseAnim) {
-      dotPulseAnim.pause();
-      dotPulseAnim = null;
-    }
-    if (statusDotRef.value) {
-      anime.set(statusDotRef.value, { scale: 1 });
-    }
-  }
-});
-
 onUnmounted(() => {
   stopPocketObserver();
-  if (breatheAnim) breatheAnim.pause();
-  if (dotPulseAnim) dotPulseAnim.pause();
 });
 </script>
 
@@ -540,9 +491,9 @@ onUnmounted(() => {
           <div class="haze-surface rounded-2xl p-4 flex-1 flex flex-col items-center justify-center text-center gap-3 group transition-all duration-300 hover:shadow-md hover:-translate-y-0.5">
             <div class="w-12 h-12 rounded-full flex items-center justify-center transition-all duration-500 group-hover:scale-110"
                  :class="server.serverState.value === 'streaming' ? 'bg-primary/20 text-primary' : (server.serverState.value === 'starting' ? 'bg-secondary/20 text-secondary' : (server.serverState.value === 'connecting' ? 'bg-tertiary/20 text-tertiary' : 'bg-surface-variant/50 text-on-surface-variant'))">
-              <CheckCircle2 v-if="server.serverState.value === 'streaming'" class="w-6 h-6 animate-pulse" />
-              <Loader2 v-else-if="server.serverState.value === 'starting'" class="w-6 h-6 animate-spin" />
-              <RadioTower v-else class="w-6 h-6 transition-transform duration-500 group-hover:rotate-12" :class="{ 'animate-spin-slow': server.serverState.value === 'connecting' }" />
+              <CheckCircle2 v-if="server.serverState.value === 'streaming'" class="w-6 h-6" />
+              <Loader2 v-else-if="server.serverState.value === 'starting'" class="w-6 h-6" />
+              <RadioTower v-else class="w-6 h-6 transition-transform duration-500 group-hover:rotate-12" />
             </div>
             <div>
               <h3 class="text-sm font-bold">{{ server.serverState.value === 'streaming' ? $t('app.status.streaming') : (server.serverState.value === 'connecting' ? $t('app.status.connecting') : (server.serverState.value === 'starting' ? $t('app.status.starting') : $t('app.status.ready'))) }}</h3>
@@ -557,10 +508,10 @@ onUnmounted(() => {
         <div class="haze-surface rounded-2xl flex flex-col items-center justify-center relative overflow-hidden group transition-all duration-300" :class="audio.showMonitoringPanel.value ? 'w-[44%]' : 'w-[62%]'">
           <!-- Central Visualizer & Action Button -->
           <div class="relative w-64 h-64 flex items-center justify-center absolute-center">
-            <AudioRing v-if="server.serverState.value === 'streaming'" :level="audio.audioLevel.value">
+            <AudioRing v-if="server.serverState.value === 'streaming'" :level="audio.audioLevel.value" :active="visualsActive">
               <!-- Central Button When Streaming -->
               <div class="relative flex items-center justify-center">
-                <div ref="glowRef" class="absolute inset-0 bg-error/30 rounded-full blur-md scale-125"></div>
+                <div class="absolute inset-0 bg-error/15 rounded-full scale-125"></div>
                 <button ref="centralBtnRef" @click="toggleStreaming" @mouseenter="onCentralBtnHover" @mouseleave="onCentralBtnLeave" class="relative z-10 w-[72px] h-[72px] rounded-full bg-error flex items-center justify-center shadow-lg hover:scale-95 transition-all duration-300 group-hover:bg-error/90 border border-white/10 hover:shadow-lg hover:shadow-error/30">
                   <Unlink class="w-7 h-7 text-on-error" stroke-width="2.5" />
                 </button>
@@ -570,8 +521,8 @@ onUnmounted(() => {
             <div v-else class="relative w-full h-full flex items-center justify-center">
               <button ref="centralBtnRef" @click="toggleStreaming" @mouseenter="onCentralBtnHover" @mouseleave="onCentralBtnLeave" class="relative z-10 w-16 h-16 rounded-full flex items-center justify-center shadow-xl transition-all duration-300 hover:-translate-y-1 active:scale-95 border border-white/10 hover:shadow-2xl hover:shadow-primary/40"
                       :class="server.serverState.value === 'starting' ? 'bg-secondary shadow-secondary/30 text-on-secondary' : (server.serverState.value === 'connecting' ? 'bg-tertiary shadow-tertiary/30 text-on-tertiary' : 'bg-primary shadow-primary/30 text-on-primary')">
-                <RefreshCw v-if="server.serverState.value === 'connecting'" class="w-7 h-7 animate-spin-slow" stroke-width="2.5" />
-                <Loader2 v-else-if="server.serverState.value === 'starting'" class="w-7 h-7 animate-spin" stroke-width="2.5" />
+                <RefreshCw v-if="server.serverState.value === 'connecting'" class="w-7 h-7" :class="{ 'animate-spin-slow': visualsActive }" stroke-width="2.5" />
+                <Loader2 v-else-if="server.serverState.value === 'starting'" class="w-7 h-7" :class="{ 'animate-spin': visualsActive }" stroke-width="2.5" />
                 <Link v-else class="w-7 h-7" stroke-width="2.5" />
               </button>
             </div>
@@ -587,7 +538,7 @@ onUnmounted(() => {
       <!-- Bottom Bar -->
       <div class="haze-surface rounded-2xl p-2 flex justify-between items-center flex-shrink-0">
         <div class="flex items-center px-3">
-          <div ref="statusDotRef" class="w-2 h-2 rounded-full mr-2" :class="server.serverState.value === 'streaming' ? 'bg-primary shadow-[0_0_8px_hsl(var(--primary))]' : (server.serverState.value === 'starting' ? 'bg-secondary animate-pulse shadow-[0_0_8px_hsl(var(--secondary))]' : (server.serverState.value === 'connecting' ? 'bg-tertiary animate-pulse shadow-[0_0_8px_hsl(var(--tertiary))]' : 'bg-on-surface-variant'))"></div>
+          <div class="w-2 h-2 rounded-full mr-2" :class="server.serverState.value === 'streaming' ? 'bg-primary shadow-[0_0_8px_hsl(var(--primary))]' : (server.serverState.value === 'starting' ? 'bg-secondary shadow-[0_0_8px_hsl(var(--secondary))]' : (server.serverState.value === 'connecting' ? 'bg-tertiary shadow-[0_0_8px_hsl(var(--tertiary))]' : 'bg-on-surface-variant'))"></div>
           <span class="text-xs font-bold uppercase tracking-wider text-on-surface-variant transition-colors duration-300">{{ server.serverState.value === 'streaming' ? $t('app.status.stateStreaming') : (server.serverState.value === 'connecting' ? $t('app.status.stateConnecting') : (server.serverState.value === 'starting' ? $t('app.status.stateStarting') : $t('app.status.stateIdle'))) }}</span>
         </div>
 

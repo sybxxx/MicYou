@@ -3,6 +3,7 @@ package com.lanrhyme.micyou.viewmodel
 import androidx.lifecycle.ViewModel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
@@ -10,6 +11,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.sample
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import com.lanrhyme.micyou.audio.AudioEngine
@@ -91,6 +94,7 @@ data class AudioStreamUiState(
     val showMonitoringPanel: Boolean = false
 )
 
+@OptIn(FlowPreview::class)
 class AudioStreamViewModel : ViewModel() {
     private val _audioEngine = AudioEngine()
     val audioEngine: AudioEngine get() = _audioEngine
@@ -102,10 +106,10 @@ class AudioStreamViewModel : ViewModel() {
     val uiState: StateFlow<AudioStreamUiState> = _uiState.asStateFlow()
 
     // 音频电平相关
-    val audioLevels = _audioEngine.audioLevels
+    val audioLevels: Flow<Float> = _audioEngine.audioLevels.sample(UI_AUDIO_LEVEL_INTERVAL_MS)
     val rawSpectrum = _audioEngine.rawSpectrum
     val processedSpectrum = _audioEngine.processedSpectrum
-    val audioLevelData = _audioEngine.audioLevelData
+    val audioLevelData: Flow<AudioLevelData> = _audioEngine.audioLevelData.sample(UI_AUDIO_LEVEL_INTERVAL_MS)
     val audioMetrics = _audioEngine.audioMetrics
 
     // 设备发现
@@ -131,6 +135,7 @@ class AudioStreamViewModel : ViewModel() {
     private var autoReconnectJob: Job? = null
 
     private companion object {
+        const val UI_AUDIO_LEVEL_INTERVAL_MS = 75L
         const val AUTO_RECONNECT_MAX_ATTEMPTS = 12
         const val AUTO_RECONNECT_INITIAL_DELAY_MS = 1_000L
         const val AUTO_RECONNECT_MAX_DELAY_MS = 30_000L
@@ -308,9 +313,10 @@ class AudioStreamViewModel : ViewModel() {
 
         // 监听音频电平数据并更新历史记录
         auxiliaryScope.launch {
-            _audioEngine.audioLevelData.collect { levelData ->
-                audioLevelHistory.addSample(levelData)
-                _levelHistory.value = audioLevelHistory.getSamples()
+            audioLevelData.collect { levelData ->
+                if (audioLevelHistory.addSample(levelData)) {
+                    _levelHistory.value = audioLevelHistory.getSamples()
+                }
             }
         }
 

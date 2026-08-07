@@ -109,7 +109,7 @@ fun AudioVisualizer(
     audioLevel: Float,
     color: Color,
     isAnimating: Boolean = true,
-    barCount: Int = 32,
+    barCount: Int = 24,
     style: VisualizerStyle = VisualizerStyle.Circular
 ) {
     val safeAudioLevel = audioLevel.coerceIn(0f, 1f)

@@ -3,32 +3,42 @@ import { ref, computed, watch, onUnmounted } from 'vue';
 
 const props = defineProps<{
   level: number; // 0 to 100
+  active?: boolean;
 }>();
 
 const smoothedLevel = ref(0);
-let animFrame: number | null = null;
+let animationTimer: ReturnType<typeof setTimeout> | null = null;
+const ANIMATION_INTERVAL_MS = 33;
 
 const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
 
 const animate = () => {
+  animationTimer = null;
+  if (props.active === false) return;
   const target = Math.max(0, Math.min(100, props.level)) / 100;
   smoothedLevel.value = lerp(smoothedLevel.value, target, 0.12);
   if (Math.abs(smoothedLevel.value - target) > 0.001) {
-    animFrame = requestAnimationFrame(animate);
+    animationTimer = setTimeout(animate, ANIMATION_INTERVAL_MS);
   } else {
     smoothedLevel.value = target;
-    animFrame = null;
   }
 };
 
-watch(() => props.level, () => {
-  if (animFrame === null) {
-    animFrame = requestAnimationFrame(animate);
+watch([() => props.level, () => props.active], () => {
+  if (props.active === false) {
+    if (animationTimer !== null) {
+      clearTimeout(animationTimer);
+      animationTimer = null;
+    }
+    return;
+  }
+  if (animationTimer === null) {
+    animationTimer = setTimeout(animate, ANIMATION_INTERVAL_MS);
   }
 }, { immediate: true });
 
 onUnmounted(() => {
-  if (animFrame !== null) cancelAnimationFrame(animFrame);
+  if (animationTimer !== null) clearTimeout(animationTimer);
 });
 
 const dotX = computed(() => 50 + 35 * Math.cos(smoothedLevel.value * Math.PI * 2));

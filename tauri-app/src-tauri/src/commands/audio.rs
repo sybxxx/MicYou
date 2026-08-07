@@ -187,7 +187,7 @@ pub async fn check_vbcable() -> Result<bool, String> {
 pub async fn install_vbcable(
     app: tauri::AppHandle,
 ) -> Result<crate::vbcable::VBCableResult, String> {
-    Ok(crate::vbcable::install(std::sync::Arc::new(crate::events::TauriEventSink(app))).await)
+    Ok(crate::vbcable::install(std::sync::Arc::new(crate::events::TauriEventSink::new(app))).await)
 }
 
 #[cfg(not(feature = "vbcable"))]
