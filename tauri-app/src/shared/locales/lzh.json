@@ -43,6 +43,8 @@
     "notify": {
       "connected": "装置已通矣。",
       "disconnected": "装置已断矣。",
+      "serverFault": "桌面音频服务故障矣（{component}）。",
+      "udpAudioWarning": "未收手机音频，候其复连矣。",
       "usbDisconnected": "USB 断矣，复插而后连。",
       "aecDisabled": "AEC 不可用，已自停。",
       "aecDisabledInferenceFailed": "AEC 处理音频败，已自停。",

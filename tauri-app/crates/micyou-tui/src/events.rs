@@ -1,7 +1,7 @@
 use std::sync::mpsc::Sender;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
-use tauri_app_lib::events::{AecStatus, ServerEvents};
+use tauri_app_lib::events::{AecStatus, ServerEvents, ServerFault};
 use tauri_app_lib::stats::AudioMetrics;
 use tauri_app_lib::tcp_server::DeviceInfo;
 
@@ -19,6 +19,7 @@ pub enum Event {
     WebClientCount(u32),
     InstallProgress(String),
     AecStatus(AecStatus),
+    ServerFault(ServerFault),
 }
 
 /// Forward server events to the TUI channel while throttling high-frequency
@@ -38,27 +39,33 @@ impl TuiEventSink {
             last_spectrum: Mutex::new(past),
         }
     }
+
+    fn send_event(&self, event: Event) {
+        if let Err(error) = self.tx.send(event) {
+            eprintln!("[events] failed to forward event to TUI: {error}");
+        }
+    }
 }
 
 impl ServerEvents for TuiEventSink {
     fn device_connected(&self, info: DeviceInfo) {
-        let _ = self.tx.send(Event::DeviceConnected(info));
+        self.send_event(Event::DeviceConnected(info));
     }
 
     fn device_disconnected(&self) {
-        let _ = self.tx.send(Event::DeviceDisconnected);
+        self.send_event(Event::DeviceDisconnected);
     }
 
     fn audio_metrics(&self, metrics: AudioMetrics) {
-        let _ = self.tx.send(Event::Metrics(metrics));
+        self.send_event(Event::Metrics(metrics));
     }
 
     fn udp_audio_warning(&self) {
-        let _ = self.tx.send(Event::UdpWarning);
+        self.send_event(Event::UdpWarning);
     }
 
     fn mute_state_changed(&self, is_muted: bool) {
-        let _ = self.tx.send(Event::MuteChanged(is_muted));
+        self.send_event(Event::MuteChanged(is_muted));
     }
 
     fn audio_level(&self, level: u32) {
@@ -66,7 +73,7 @@ impl ServerEvents for TuiEventSink {
         if last.elapsed() >= Duration::from_millis(70) {
             *last = Instant::now();
             drop(last);
-            let _ = self.tx.send(Event::Level(level));
+            self.send_event(Event::Level(level));
         }
     }
 
@@ -75,23 +82,27 @@ impl ServerEvents for TuiEventSink {
         if last.elapsed() >= Duration::from_millis(70) {
             *last = Instant::now();
             drop(last);
-            let _ = self.tx.send(Event::Spectrum(raw, processed));
+            self.send_event(Event::Spectrum(raw, processed));
         }
     }
 
     fn server_stopped(&self) {
-        let _ = self.tx.send(Event::Stopped);
+        self.send_event(Event::Stopped);
+    }
+
+    fn server_fault(&self, component: String, message: String) {
+        self.send_event(Event::ServerFault(ServerFault { component, message }));
     }
 
     fn web_client_count(&self, count: u32) {
-        let _ = self.tx.send(Event::WebClientCount(count));
+        self.send_event(Event::WebClientCount(count));
     }
 
     fn install_progress(&self, message: String) {
-        let _ = self.tx.send(Event::InstallProgress(message));
+        self.send_event(Event::InstallProgress(message));
     }
 
     fn aec_status_changed(&self, status: AecStatus) {
-        let _ = self.tx.send(Event::AecStatus(status));
+        self.send_event(Event::AecStatus(status));
     }
 }

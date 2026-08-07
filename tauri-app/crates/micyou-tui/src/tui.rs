@@ -208,6 +208,12 @@ impl TuiApp {
             Event::Stopped => {
                 self.log("[err] server stopped".to_string());
             }
+            Event::ServerFault(fault) => {
+                self.log(format!(
+                    "[err] server fault in {}: {}",
+                    fault.component, fault.message
+                ));
+            }
             Event::WebClientCount(count) => {
                 self.web_clients = count;
                 self.log(format!("[inf] web clients: {count}"));

@@ -35,6 +35,9 @@ impl ServerEvents for CliEventSink {
     fn server_stopped(&self) {
         println!("[server] stopped");
     }
+    fn server_fault(&self, component: String, message: String) {
+        println!("[server] fault in {component}: {message}");
+    }
     fn web_client_count(&self, count: u32) {
         println!("[web] clients: {count}");
     }

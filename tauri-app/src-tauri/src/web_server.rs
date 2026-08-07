@@ -269,7 +269,11 @@ async fn handle_ws_socket(
     state.events.web_client_count(count as u32);
     log::info!("Web client connected (total: {})", count);
 
-    if count == 1 && !replaced {
+    if replaced {
+        state.events.device_disconnected();
+    }
+
+    if count == 1 {
         state
             .events
             .device_connected(crate::tcp_server::DeviceInfo {

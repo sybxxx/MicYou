@@ -788,6 +788,7 @@ pub async fn start_server_inner(
     let takeover_lock_tcp = state.takeover_lock.clone();
     let active_audio_session_tcp = state.active_audio_session.clone();
     let (tcp_ready_tx, tcp_ready_rx) = tokio::sync::oneshot::channel();
+    let events_tcp_fault = events.clone();
     let tcp_task = tokio::spawn(async move {
         if let Err(e) = crate::tcp_server::start_tcp_server(
             events_tcp,
@@ -804,7 +805,8 @@ pub async fn start_server_inner(
         )
         .await
         {
-            eprintln!("TCP Server error: {}", e);
+            log::error!(target: "server", "TCP server error: {}", e);
+            events_tcp_fault.server_fault("tcp".to_string(), e.to_string());
         }
     });
 
@@ -814,6 +816,7 @@ pub async fn start_server_inner(
     let active_audio_session_udp = state.active_audio_session.clone();
     let bind_addr_udp = bind_addr.clone();
     let (udp_ready_tx, udp_ready_rx) = tokio::sync::oneshot::channel();
+    let events_udp_fault = events.clone();
     let udp_task = tokio::spawn(async move {
         if let Err(e) = crate::udp_server::start_udp_server(
             audio_tx,
@@ -826,7 +829,8 @@ pub async fn start_server_inner(
         )
         .await
         {
-            eprintln!("UDP Server error: {}", e);
+            log::error!(target: "server", "UDP server error: {}", e);
+            events_udp_fault.server_fault("udp".to_string(), e.to_string());
         }
     });
 

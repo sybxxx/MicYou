@@ -404,6 +404,8 @@
     <string name="app_name">MicYou</string>
     <string name="streaming_notification_title">MicYou Streaming</string>
     <string name="streaming_notification_text">Tap to disconnect</string>
+    <string name="streaming_notification_connecting">正在连接电脑喵...</string>
+    <string name="streaming_notification_reconnecting">正在重新连接电脑喵...</string>
     <string name="qs_tile_label">MicYou</string>
     <string name="qs_toast_connecting">Connecting...</string>
     <string name="qs_toast_connected">Connected</string>

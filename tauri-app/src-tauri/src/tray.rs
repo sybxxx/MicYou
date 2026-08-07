@@ -110,7 +110,9 @@ pub fn build_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
                 | MENU_ID_EXIT
                 | MENU_ID_SWITCH_CLI
                 | MENU_ID_SWITCH_TUI => {
-                    let _ = app.emit("tray-action", id);
+                    if let Err(error) = app.emit("tray-action", id) {
+                        log::warn!(target: "events", "failed to emit tray-action: {error}");
+                    }
                 }
                 other => {
                     log::warn!(target: "tray", "unknown menu id: {other}");
@@ -124,7 +126,9 @@ pub fn build_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
             } = event
             {
                 let app = tray.app_handle();
-                let _ = app.emit("tray-action", MENU_ID_SHOW);
+                if let Err(error) = app.emit("tray-action", MENU_ID_SHOW) {
+                    log::warn!(target: "events", "failed to emit tray-action: {error}");
+                }
             }
         })
         .build(app)?;

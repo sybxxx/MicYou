@@ -43,6 +43,8 @@
     "notify": {
       "connected": "设备连接成功喵~ ✓",
       "disconnected": "设备断开连接喵~ (×_×;)",
+      "serverFault": "桌面音频服务出故障了喵~（{component}）",
+      "udpAudioWarning": "收不到手机音频数据喵~正在等手机重新连接喵~",
       "usbDisconnected": "USB 断开了喵~请重新插线并点击连接喵~",
       "aecDisabled": "AEC 不可用喵~已自动停用喵~",
       "aecDisabledInferenceFailed": "AEC 音频处理失败喵~已自动停用喵~",

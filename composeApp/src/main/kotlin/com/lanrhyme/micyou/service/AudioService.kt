@@ -13,6 +13,7 @@ import android.os.IBinder
 import android.os.PowerManager
 import android.net.wifi.WifiManager
 import android.app.PendingIntent
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.runBlocking
 import com.lanrhyme.micyou.audio.AudioEngine
@@ -31,7 +32,12 @@ class AudioService : Service() {
         const val ACTION_START = "ACTION_START"
         const val ACTION_STOP = "ACTION_STOP"
         const val ACTION_DISCONNECT = "ACTION_DISCONNECT"
+        const val ACTION_UPDATE_STATUS = "ACTION_UPDATE_STATUS"
         const val EXTRA_USE_WIFI_LOCK = "EXTRA_USE_WIFI_LOCK"
+        const val EXTRA_STATUS = "EXTRA_STATUS"
+        const val STATUS_CONNECTING = "connecting"
+        const val STATUS_STREAMING = "streaming"
+        const val STATUS_RECONNECTING = "reconnecting"
     }
 
     override fun onCreate() {
@@ -43,7 +49,14 @@ class AudioService : Service() {
         val keepAlive = when (intent?.action) {
             ACTION_START -> {
                 useWifiLock = intent.getBooleanExtra(EXTRA_USE_WIFI_LOCK, false)
-                startForegroundService(useWifiLock)
+                startForegroundService(
+                    useWifiLock,
+                    intent.getStringExtra(EXTRA_STATUS) ?: STATUS_CONNECTING
+                )
+                true
+            }
+            ACTION_UPDATE_STATUS -> {
+                updateNotification(intent.getStringExtra(EXTRA_STATUS) ?: STATUS_CONNECTING)
                 true
             }
             ACTION_STOP -> {
@@ -60,7 +73,7 @@ class AudioService : Service() {
                 // restart. Reassert the foreground state only for a live audio session.
                 if (AudioEngine.isStreaming()) {
                     useWifiLock = AudioEngine.isWifiStreaming()
-                    startForegroundService(useWifiLock)
+                    startForegroundService(useWifiLock, STATUS_STREAMING)
                     true
                 } else {
                     false
@@ -71,8 +84,8 @@ class AudioService : Service() {
         return if (keepAlive) START_STICKY else START_NOT_STICKY
     }
 
-    private fun startForegroundService(useWifiLock: Boolean) {
-        val notification = createNotification()
+    private fun startForegroundService(useWifiLock: Boolean, status: String) {
+        val notification = createNotification(status)
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForeground(
@@ -129,7 +142,16 @@ class AudioService : Service() {
         super.onDestroy()
     }
 
-    private fun createNotification(): Notification {
+    private fun updateNotification(status: String) {
+        try {
+            getSystemService(NotificationManager::class.java)
+                .notify(NOTIFICATION_ID, createNotification(status))
+        } catch (e: Exception) {
+            Log.w("AudioService", "Failed to update streaming notification", e)
+        }
+    }
+
+    private fun createNotification(status: String): Notification {
         val disconnectIntent = Intent(this, AudioService::class.java).apply { action = ACTION_DISCONNECT }
     val disconnectPendingIntent = PendingIntent.getService(
             this,
@@ -137,7 +159,7 @@ class AudioService : Service() {
             disconnectIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
-    val (title, text) = resolveNotificationText()
+    val (title, text) = resolveNotificationText(status)
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle(title)
@@ -151,8 +173,27 @@ class AudioService : Service() {
             .build()
     }
 
-    private fun resolveNotificationText(): Pair<String, String> {
+    private fun resolveNotificationText(status: String): Pair<String, String> {
         val selectedLanguage = readSelectedLanguage()
+        if (status != STATUS_STREAMING) {
+            val text = when (status) {
+                STATUS_RECONNECTING -> when (selectedLanguage) {
+                    AppLanguage.English -> "Reconnecting to desktop..."
+                    AppLanguage.Chinese -> "正在重新连接电脑端..."
+                    AppLanguage.ChineseTraditional -> "正在重新連線至電腦端..."
+                    AppLanguage.Cantonese -> "重新連緊電腦..."
+                    else -> getString(R.string.streaming_notification_reconnecting)
+                }
+                else -> when (selectedLanguage) {
+                    AppLanguage.English -> "Connecting to desktop..."
+                    AppLanguage.Chinese -> "正在连接电脑端..."
+                    AppLanguage.ChineseTraditional -> "正在連線至電腦端..."
+                    AppLanguage.Cantonese -> "連緊電腦..."
+                    else -> getString(R.string.streaming_notification_connecting)
+                }
+            }
+            return getString(R.string.app_name) to text
+        }
         return when (selectedLanguage) {
             AppLanguage.English -> "MicYou Streaming" to "Tap to disconnect"
             AppLanguage.Chinese -> "MicYou 正在传输" to "点击断开连接"

@@ -45,6 +45,8 @@
     "notify": {
       "connected": "设备已成功连接",
       "disconnected": "设备已断开连接",
+      "serverFault": "桌面音频服务发生故障（{component}）。",
+      "udpAudioWarning": "未收到手机音频数据，正在等待重新连接。",
       "usbDisconnected": "USB 已断开，请重新插上数据线后点击连接",
       "aecDisabled": "AEC 不可用，已自动停用。",
       "aecDisabledInferenceFailed": "AEC 音频处理失败，已自动停用。",

@@ -151,7 +151,9 @@ pub async fn set_monitoring(
     state
         .is_monitoring
         .store(enabled, std::sync::atomic::Ordering::Relaxed);
-    let _ = app.emit("monitoring-enabled-changed", enabled);
+    if let Err(error) = app.emit("monitoring-enabled-changed", enabled) {
+        log::warn!(target: "events", "failed to emit monitoring-enabled-changed: {error}");
+    }
     Ok(())
 }
 

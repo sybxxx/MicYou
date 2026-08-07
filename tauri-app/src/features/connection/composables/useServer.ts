@@ -45,6 +45,11 @@ export interface NetworkInterfaceInfo {
   interface_name: string;
 }
 
+interface ServerFaultPayload {
+  component: string;
+  message: string;
+}
+
 /**
  * Composable for managing the connection server, IP configurations, modes, and device scanning
  */
@@ -433,6 +438,8 @@ export function useServer(options?: { audioLevel?: Ref<number>; isMuted?: Ref<bo
   let unlistenDeviceConnected: UnlistenFn | null = null;
   let unlistenDeviceDisconnected: UnlistenFn | null = null;
   let unlistenServerStopped: UnlistenFn | null = null;
+  let unlistenServerFault: UnlistenFn | null = null;
+  let unlistenUdpWarning: UnlistenFn | null = null;
   let unlistenWebClients: UnlistenFn | null = null;
   let unlistenAecStatus: UnlistenFn | null = null;
 
@@ -522,11 +529,8 @@ export function useServer(options?: { audioLevel?: Ref<number>; isMuted?: Ref<bo
     unlistenDeviceConnected = await listen('device-connected', () => {
       const hasActiveServer = serverState.value !== 'idle' || activeConnectionMode.value !== null;
       if (!hasActiveServer) return;
-      const wasStreaming = serverState.value === 'streaming';
       serverState.value = 'streaming';
-      if (!wasStreaming) {
-        void notify(t('app.notify.connected'));
-      }
+      void notify(t('app.notify.connected'));
     });
 
     // Listen for client disconnect events
@@ -560,6 +564,30 @@ export function useServer(options?: { audioLevel?: Ref<number>; isMuted?: Ref<bo
       if (options?.isMuted) options.isMuted.value = false;
     });
 
+    // Listen for a network task that failed unexpectedly. This is distinct from
+    // a normal client disconnect so the user knows the desktop service itself
+    // needs to be restarted.
+    unlistenServerFault = await listen<ServerFaultPayload>('server-fault', (event) => {
+      console.error('[Server] background task failed:', event.payload);
+      // A failed network task leaves the shared cancellation token alive. Stop
+      // the remaining tasks so the next manual start can create a clean session.
+      void invoke('stop_server').catch((error) => {
+        console.warn('[Server] failed to clean up after background task failure:', error);
+      });
+      serverState.value = 'idle';
+      activeConnectionMode.value = null;
+      activePort.value = null;
+      if (options?.audioLevel) options.audioLevel.value = 0;
+      if (options?.isMuted) options.isMuted.value = false;
+      void notify(t('app.notify.serverFault', { component: event.payload.component }));
+    });
+
+    // A UDP stall can leave the TCP control connection alive. Keep the existing
+    // detailed dialog and also surface a notification that works while hidden.
+    unlistenUdpWarning = await listen('udp_audio_warning', () => {
+      void notify(t('app.notify.udpAudioWarning'));
+    });
+
     // Listen for clients joining/leaving the local web server
     unlistenWebClients = await listen<number>('web-client-count', (event) => {
       webClientCount.value = event.payload;
@@ -581,6 +609,8 @@ export function useServer(options?: { audioLevel?: Ref<number>; isMuted?: Ref<bo
     if (unlistenDeviceConnected) unlistenDeviceConnected();
     if (unlistenDeviceDisconnected) unlistenDeviceDisconnected();
     if (unlistenServerStopped) unlistenServerStopped();
+    if (unlistenServerFault) unlistenServerFault();
+    if (unlistenUdpWarning) unlistenUdpWarning();
     if (unlistenWebClients) unlistenWebClients();
     if (unlistenAecStatus) unlistenAecStatus();
     dismissNotification();

@@ -440,6 +440,8 @@ class AudioEngine constructor() {
     @Volatile
     private var desiredRunning: Boolean = false
     @Volatile
+    private var hasEstablishedStream: Boolean = false
+    @Volatile
     private var lifecycleGeneration: Long = 0
     private var startRequestGeneration: Long = 0
 
@@ -732,7 +734,9 @@ class AudioEngine constructor() {
                             throw CancellationException("Audio session superseded while recording started")
                         }
                         _state.value = StreamState.Streaming
+                        hasEstablishedStream = true
                         _lastError.value = null
+                        updateStreamingNotification(AudioService.STATUS_STREAMING)
                         connectionComplete.complete(Unit)
 
                         val writerJob = launch {
@@ -972,6 +976,9 @@ class AudioEngine constructor() {
                             else -> e.message ?: getString(R.string.connectionDisconnected)
                         }
                         Logger.e("AudioEngine", "Connection lost", e)
+                        if (desiredRunning && hasEstablishedStream) {
+                            updateStreamingNotification(AudioService.STATUS_RECONNECTING)
+                        }
                         if (lifecycleGeneration == sessionGeneration) {
                             _state.value = StreamState.Error
                             _lastError.value = errorMsg
@@ -1034,7 +1041,11 @@ class AudioEngine constructor() {
                         if (recorderToRelease != null &&
                             activeEngineOwner.clearIfCurrent(this@AudioEngine, sessionJobIdentity, recorderToRelease)
                         ) {
-                            stopStreamingNotification()
+                            if (desiredRunning && hasEstablishedStream) {
+                                updateStreamingNotification(AudioService.STATUS_RECONNECTING)
+                            } else {
+                                stopStreamingNotification()
+                            }
                             Logger.i("AudioEngine", "AudioEngine stopped")
                         }
                     }
@@ -1198,6 +1209,7 @@ class AudioEngine constructor() {
                 pendingResources = stopTimedOutResources
                 if (userInitiated) {
                     desiredRunning = false
+                    hasEstablishedStream = false
                     lifecycleGeneration++
                     startRequestGeneration++
                     configRestartRequest++
@@ -1230,6 +1242,7 @@ class AudioEngine constructor() {
         startStopMutex.withLock {
             if (userInitiated) {
                 desiredRunning = false
+                hasEstablishedStream = false
                 lifecycleGeneration++
                 startRequestGeneration++
                 configRestartRequest++
@@ -1314,6 +1327,7 @@ class AudioEngine constructor() {
 
         startStopMutex.withLock {
             desiredRunning = false
+            hasEstablishedStream = false
             lifecycleGeneration++
             startRequestGeneration++
             configRestartRequest++
@@ -1397,11 +1411,25 @@ class AudioEngine constructor() {
         val intent = Intent(context, AudioService::class.java).apply {
             action = AudioService.ACTION_START
             putExtra(AudioService.EXTRA_USE_WIFI_LOCK, mode == ConnectionMode.Wifi)
+            putExtra(AudioService.EXTRA_STATUS, AudioService.STATUS_CONNECTING)
         }
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
             context.startForegroundService(intent)
         } else {
             context.startService(intent)
+        }
+    }
+
+    private fun updateStreamingNotification(status: String) {
+        val context = ContextHelper.getContext() ?: return
+        try {
+            val intent = Intent(context, AudioService::class.java).apply {
+                action = AudioService.ACTION_UPDATE_STATUS
+                putExtra(AudioService.EXTRA_STATUS, status)
+            }
+            context.startService(intent)
+        } catch (e: Exception) {
+            Logger.w("AudioEngine", "Failed to update streaming notification: ${e.message}")
         }
     }
     

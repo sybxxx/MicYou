@@ -1,6 +1,7 @@
 use crate::commands::system::SpectrumPayload;
 use crate::stats::AudioMetrics;
 use crate::tcp_server::DeviceInfo;
+use serde::Serialize;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::Emitter;
@@ -22,6 +23,7 @@ pub trait ServerEvents: Send + Sync + 'static {
     fn audio_level(&self, level: u32);
     fn audio_spectrum(&self, raw: Vec<f32>, processed: Vec<f32>);
     fn server_stopped(&self);
+    fn server_fault(&self, component: String, message: String);
     fn web_client_count(&self, count: u32);
     fn install_progress(&self, message: String);
     fn aec_status_changed(&self, status: AecStatus);
@@ -42,11 +44,35 @@ pub struct TauriEventSink {
     last_audio_level_emit: Mutex<Option<Instant>>,
 }
 
+#[derive(Serialize, Clone, Debug)]
+pub struct ServerFault {
+    pub component: String,
+    pub message: String,
+}
+
 impl TauriEventSink {
     pub fn new(app: tauri::AppHandle) -> Self {
         Self {
             app,
             last_audio_level_emit: Mutex::new(None),
+        }
+    }
+}
+
+impl TauriEventSink {
+    fn emit_app_event<T: Serialize + Clone>(&self, name: &str, payload: T) {
+        if let Err(error) = self.app.emit(name, payload) {
+            log::warn!(target: "events", "failed to emit {name}: {error}");
+        }
+    }
+
+    fn emit_main_window_event<T: Serialize + Clone>(&self, name: &str, payload: T) {
+        if let Some(main_window) = self.app.get_webview_window("main") {
+            if let Err(error) = main_window.emit(name, payload) {
+                log::warn!(target: "events", "failed to emit {name}: {error}");
+            }
+        } else {
+            log::debug!(target: "events", "skipped {name}: main window is unavailable");
         }
     }
 }
@@ -66,19 +92,19 @@ fn should_emit_audio_level(last_emit: &mut Option<Instant>, now: Instant) -> boo
 
 impl ServerEvents for TauriEventSink {
     fn device_connected(&self, info: DeviceInfo) {
-        let _ = self.app.emit("device-connected", info);
+        self.emit_app_event("device-connected", info);
     }
     fn device_disconnected(&self) {
-        let _ = self.app.emit("device-disconnected", ());
+        self.emit_app_event("device-disconnected", ());
     }
     fn audio_metrics(&self, metrics: AudioMetrics) {
-        let _ = self.app.emit("audio-metrics", metrics);
+        self.emit_app_event("audio-metrics", metrics);
     }
     fn udp_audio_warning(&self) {
-        let _ = self.app.emit("udp_audio_warning", ());
+        self.emit_app_event("udp_audio_warning", ());
     }
     fn mute_state_changed(&self, is_muted: bool) {
-        let _ = self.app.emit("mute-state-changed", is_muted);
+        self.emit_app_event("mute-state-changed", is_muted);
     }
     fn audio_level(&self, level: u32) {
         let should_emit = self
@@ -89,27 +115,26 @@ impl ServerEvents for TauriEventSink {
         if !should_emit {
             return;
         }
-        if let Some(main_window) = self.app.get_webview_window("main") {
-            let _ = main_window.emit("audio-level", level);
-        }
+        self.emit_main_window_event("audio-level", level);
     }
     fn audio_spectrum(&self, raw: Vec<f32>, processed: Vec<f32>) {
-        if let Some(main_window) = self.app.get_webview_window("main") {
-            let _ = main_window.emit("audio-spectrum", SpectrumPayload { raw, processed });
-        }
+        self.emit_main_window_event("audio-spectrum", SpectrumPayload { raw, processed });
     }
     fn server_stopped(&self) {
-        let _ = self.app.emit("server-stopped", ());
+        self.emit_app_event("server-stopped", ());
+    }
+    fn server_fault(&self, component: String, message: String) {
+        self.emit_app_event("server-fault", ServerFault { component, message });
     }
     fn web_client_count(&self, count: u32) {
-        let _ = self.app.emit("web-client-count", count);
+        self.emit_app_event("web-client-count", count);
     }
     fn install_progress(&self, message: String) {
-        let _ = self.app.emit("vbcable-install-progress", message);
+        self.emit_app_event("vbcable-install-progress", message);
     }
 
     fn aec_status_changed(&self, status: AecStatus) {
-        let _ = self.app.emit("aec-status-changed", status);
+        self.emit_app_event("aec-status-changed", status);
     }
 }
 
@@ -131,5 +156,17 @@ mod tests {
             &mut last_emit,
             start + Duration::from_millis(AUDIO_LEVEL_EVENT_INTERVAL_MS)
         ));
+    }
+
+    #[test]
+    fn server_fault_payload_matches_frontend_event_shape() {
+        let payload = ServerFault {
+            component: "udp".to_string(),
+            message: "socket failed".to_string(),
+        };
+        let json = serde_json::to_value(payload).expect("server fault should serialize");
+
+        assert_eq!(json["component"], "udp");
+        assert_eq!(json["message"], "socket failed");
     }
 }

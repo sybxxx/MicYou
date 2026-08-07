@@ -505,8 +505,16 @@ async fn handle_client(
         });
         old
     };
+    let replaced_connection = old.is_some();
     drop(old);
     drop(_takeover_guard);
+
+    // A new handshake takes over the active slot before the old client task can
+    // finish its cleanup. Publish the logical disconnect explicitly so the GUI
+    // can show the short reconnect transition instead of silently skipping it.
+    if replaced_connection {
+        events.device_disconnected();
+    }
 
     println!("Handshake successful with {}", addr);
     let device_info = DeviceInfo {

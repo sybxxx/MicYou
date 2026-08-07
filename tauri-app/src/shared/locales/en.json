@@ -45,6 +45,8 @@
     "notify": {
       "connected": "Device connected successfully.",
       "disconnected": "Device disconnected.",
+      "serverFault": "Desktop audio service failed ({component}).",
+      "udpAudioWarning": "Audio packets stopped arriving; waiting for the phone to reconnect.",
       "usbDisconnected": "USB disconnected. Please reconnect the cable and click Connect.",
       "aecDisabled": "AEC became unavailable and was automatically disabled.",
       "aecDisabledInferenceFailed": "AEC audio processing failed and was automatically disabled.",

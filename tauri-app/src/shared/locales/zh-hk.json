@@ -43,6 +43,8 @@
     "notify": {
       "connected": "裝置已經成功連接",
       "disconnected": "裝置已經斷開連接",
+      "serverFault": "桌面音訊服務發生故障（{component}）。",
+      "udpAudioWarning": "未收到手機音訊資料，正在等待重新連接。",
       "usbDisconnected": "USB 斷開咗，請重新插返條線再㩒連線",
       "aecDisabled": "AEC 唔可用，已自動停用。",
       "aecDisabledInferenceFailed": "AEC 音訊處理失敗，已自動停用。",
