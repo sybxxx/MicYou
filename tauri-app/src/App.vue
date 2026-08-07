@@ -651,6 +651,35 @@ onUnmounted(() => {
       @dismiss="server.showQrDialog.value = false"
     />
 
+    <Transition
+      enter-active-class="transition ease-out duration-200"
+      enter-from-class="opacity-0 -translate-y-2"
+      enter-to-class="opacity-100 translate-y-0"
+      leave-active-class="transition ease-in duration-150"
+      leave-from-class="opacity-100 translate-y-0"
+      leave-to-class="opacity-0 -translate-y-2"
+    >
+      <div
+        v-if="server.notificationMessage.value"
+        class="fixed inset-x-0 top-4 z-[70] flex justify-center px-4 pointer-events-none"
+        role="status"
+        aria-live="polite"
+      >
+        <div class="pointer-events-auto flex max-w-[min(90vw,28rem)] items-center gap-3 rounded-xl border border-primary/20 bg-surface/95 px-4 py-3 text-sm text-foreground shadow-xl backdrop-blur-md">
+          <CheckCircle2 class="h-5 w-5 shrink-0 text-primary" />
+          <span class="min-w-0 flex-1 break-words">{{ server.notificationMessage.value }}</span>
+          <button
+            class="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-on-surface-variant transition-colors hover:bg-surface-variant/60 hover:text-foreground"
+            :title="t('app.web.close')"
+            :aria-label="t('app.web.close')"
+            @click="server.dismissNotification()"
+          >
+            <X class="h-4 w-4" />
+          </button>
+        </div>
+      </div>
+    </Transition>
+
     <!-- IP Switch Confirmation Dialog -->
     <Transition
       enter-active-class="transition ease-out duration-200"

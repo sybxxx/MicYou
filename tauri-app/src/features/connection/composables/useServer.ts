@@ -74,6 +74,8 @@ export function useServer(options?: { audioLevel?: Ref<number>; isMuted?: Ref<bo
   
   // Flag indicating if desktop OS notification alerts are enabled
   const notificationsEnabled = useStorage<boolean>('micyou_notifications', true);
+  const notificationMessage = ref<string | null>(null);
+  let notificationTimer: ReturnType<typeof setTimeout> | null = null;
   
   // Cache of primary network information returned by backend
   const networkInfo = ref<NetworkInfo | null>(null);
@@ -143,15 +145,43 @@ export function useServer(options?: { audioLevel?: Ref<number>; isMuted?: Ref<bo
     return v === 'streaming' || v === 'connecting' || v === 'starting';
   }
 
+  function dismissNotification() {
+    if (notificationTimer) {
+      clearTimeout(notificationTimer);
+      notificationTimer = null;
+    }
+    notificationMessage.value = null;
+  }
+
+  function showInAppNotification(body: string) {
+    notificationMessage.value = body;
+    if (notificationTimer) clearTimeout(notificationTimer);
+    notificationTimer = setTimeout(() => {
+      notificationMessage.value = null;
+      notificationTimer = null;
+    }, 5000);
+  }
+
   /**
-   * Sends a desktop push notification if permissions are granted
+   * Shows an in-app status message and best-effort desktop notification.
+   * The in-app message remains visible when Windows notifications are unavailable.
    */
   async function notify(body: string) {
-    const granted = await isPermissionGranted();
-    if (!granted) {
-      await requestPermission();
+    if (!notificationsEnabled.value) return;
+    showInAppNotification(body);
+    try {
+      let granted = await isPermissionGranted();
+      if (!granted) {
+        granted = (await requestPermission()) === 'granted';
+      }
+      if (!granted) {
+        console.warn('[Notifications] Desktop notification permission was not granted');
+        return;
+      }
+      sendNotification({ title: 'MicYou', body });
+    } catch (error) {
+      console.warn('[Notifications] Desktop notification failed; using in-app message:', error);
     }
-    sendNotification({ title: 'MicYou', body });
   }
 
   /**
@@ -490,34 +520,34 @@ export function useServer(options?: { audioLevel?: Ref<number>; isMuted?: Ref<bo
 
     // Listen for client connection successful event
     unlistenDeviceConnected = await listen('device-connected', () => {
-      if (serverState.value === 'idle') return;
+      const hasActiveServer = serverState.value !== 'idle' || activeConnectionMode.value !== null;
+      if (!hasActiveServer) return;
+      const wasStreaming = serverState.value === 'streaming';
       serverState.value = 'streaming';
-      if (notificationsEnabled.value) {
-        notify(t('app.notify.connected'));
+      if (!wasStreaming) {
+        void notify(t('app.notify.connected'));
       }
     });
 
     // Listen for client disconnect events
     unlistenDeviceDisconnected = await listen('device-disconnected', async () => {
-      if (serverState.value === 'streaming') {
-        const mode = activeConnectionMode.value || connectionMode.value;
-        if (mode === 'usb') {
-          try { await invoke('stop_server'); } catch { /* best-effort cleanup, ignore */ }
-          serverState.value = 'idle';
-          activeConnectionMode.value = null;
-          activePort.value = null;
-          if (options?.audioLevel) options.audioLevel.value = 0;
-          if (options?.isMuted) options.isMuted.value = false;
-          if (notificationsEnabled.value) {
-            notify(t('app.notify.usbDisconnected'));
-          }
-        } else {
-          serverState.value = 'connecting';
-          if (options?.audioLevel) options.audioLevel.value = 0;
-          if (notificationsEnabled.value) {
-            notify(t('app.notify.disconnected'));
-          }
-        }
+      const hadActiveServer = serverState.value !== 'idle' || activeConnectionMode.value !== null;
+      if (!hadActiveServer) return;
+
+      const mode = activeConnectionMode.value || connectionMode.value;
+      if (mode === 'usb') {
+        try { await invoke('stop_server'); } catch { /* best-effort cleanup, ignore */ }
+        serverState.value = 'idle';
+        activeConnectionMode.value = null;
+        activePort.value = null;
+        if (options?.audioLevel) options.audioLevel.value = 0;
+        if (options?.isMuted) options.isMuted.value = false;
+        void notify(t('app.notify.usbDisconnected'));
+      } else {
+        serverState.value = 'connecting';
+        if (options?.audioLevel) options.audioLevel.value = 0;
+        if (options?.isMuted) options.isMuted.value = false;
+        void notify(t('app.notify.disconnected'));
       }
     });
 
@@ -553,6 +583,7 @@ export function useServer(options?: { audioLevel?: Ref<number>; isMuted?: Ref<bo
     if (unlistenServerStopped) unlistenServerStopped();
     if (unlistenWebClients) unlistenWebClients();
     if (unlistenAecStatus) unlistenAecStatus();
+    dismissNotification();
   });
 
   return {
@@ -578,6 +609,8 @@ export function useServer(options?: { audioLevel?: Ref<number>; isMuted?: Ref<bo
     outputDevice,
     showQrDialog,
     notificationsEnabled,
+    notificationMessage,
+    dismissNotification,
     showIpSwitchConfirm,
     pendingIp,
     pendingAutoSelect,

@@ -340,8 +340,16 @@ class AudioEngine constructor() {
         }
 
         fun isStreaming(): Boolean {
-            val state = getActiveEngine()?.currentStreamState()
+            val engine = getActiveEngine() ?: return false
+            val state = engine.currentStreamState()
             return state == StreamState.Streaming || state == StreamState.Connecting
+        }
+
+        fun isWifiStreaming(): Boolean {
+            val engine = getActiveEngine() ?: return false
+            val state = engine.currentStreamState()
+            return engine.savedMode == ConnectionMode.Wifi &&
+                (state == StreamState.Streaming || state == StreamState.Connecting)
         }
     }
     private val _state = MutableStateFlow(StreamState.Idle)
@@ -605,6 +613,10 @@ class AudioEngine constructor() {
                             throw IllegalStateException(msg)
                         }
 
+                        // Promote the process before any network handshake so Android can keep
+                        // the recorder and sockets alive if the user backgrounds the activity.
+                        startStreamingNotification(mode)
+
                         try {
                             if (NoiseSuppressor.isAvailable()) {
                                 sessionNoiseSuppressor = NoiseSuppressor.create(sessionRecorder.audioSessionId)
@@ -711,21 +723,6 @@ class AudioEngine constructor() {
                         if (lifecycleGeneration != sessionGeneration || !desiredRunning) {
                             throw CancellationException("Audio session superseded before recording started")
                         }
-                        if (activeEngineOwner.isCurrent(this@AudioEngine, sessionJobIdentity, sessionRecorder)) {
-                            val context = ContextHelper.getContext()
-                            if (context != null) {
-                                val intent = Intent(context, AudioService::class.java).apply {
-                                    action = AudioService.ACTION_START
-                                    putExtra(AudioService.EXTRA_USE_WIFI_LOCK, mode == ConnectionMode.Wifi)
-                                }
-                                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-                                    context.startForegroundService(intent)
-                                } else {
-                                    context.startService(intent)
-                                }
-                            }
-                        }
-
                         recorder.startRecording()
                         if (sessionRecorder.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
                             throw IllegalStateException("Audio recorder failed to enter recording state")
@@ -1380,6 +1377,23 @@ class AudioEngine constructor() {
             context.startService(intent)
         } catch (e: Exception) {
             Logger.w("AudioEngine", "Failed to stop streaming notification: ${e.message}")
+        }
+    }
+
+    private fun startStreamingNotification(mode: ConnectionMode) {
+        val context = ContextHelper.getContext()
+        if (context == null) {
+            Logger.w("AudioEngine", "Audio context is unavailable; foreground service was not started")
+            return
+        }
+        val intent = Intent(context, AudioService::class.java).apply {
+            action = AudioService.ACTION_START
+            putExtra(AudioService.EXTRA_USE_WIFI_LOCK, mode == ConnectionMode.Wifi)
+        }
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+            context.startForegroundService(intent)
+        } else {
+            context.startService(intent)
         }
     }
     

@@ -23,6 +23,7 @@ class AudioService : Service() {
 
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
+    private var useWifiLock = false
 
     companion object {
         private const val CHANNEL_ID = "AudioServiceChannel"
@@ -39,15 +40,35 @@ class AudioService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        when (intent?.action) {
-            ACTION_START -> startForegroundService(intent.getBooleanExtra(EXTRA_USE_WIFI_LOCK, false))
-            ACTION_STOP -> stopForegroundService()
+        val keepAlive = when (intent?.action) {
+            ACTION_START -> {
+                useWifiLock = intent.getBooleanExtra(EXTRA_USE_WIFI_LOCK, false)
+                startForegroundService(useWifiLock)
+                true
+            }
+            ACTION_STOP -> {
+                stopForegroundService()
+                false
+            }
             ACTION_DISCONNECT -> {
                 AudioEngine.requestDisconnectFromNotification()
                 stopForegroundService()
+                false
             }
+            null -> {
+                // START_STICKY recreates the service with a null intent after a system
+                // restart. Reassert the foreground state only for a live audio session.
+                if (AudioEngine.isStreaming()) {
+                    useWifiLock = AudioEngine.isWifiStreaming()
+                    startForegroundService(useWifiLock)
+                    true
+                } else {
+                    false
+                }
+            }
+            else -> AudioEngine.isStreaming()
         }
-        return START_NOT_STICKY
+        return if (keepAlive) START_STICKY else START_NOT_STICKY
     }
 
     private fun startForegroundService(useWifiLock: Boolean) {
