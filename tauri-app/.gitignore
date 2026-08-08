@@ -25,3 +25,4 @@ src/generated/third-party-licenses.html
 *.sw?
 **/target
 target-ascii/
+target-ascii-release/
