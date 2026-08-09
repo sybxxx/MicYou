@@ -19,6 +19,10 @@ data class DiscoveredDevice(
     val port: Int
 )
 
+/** Returns an endpoint that can be selected without user input only when it is unambiguous. */
+internal fun selectSingleDiscoveredDevice(devices: List<DiscoveredDevice>): DiscoveredDevice? =
+    devices.singleOrNull()
+
 class DeviceDiscoveryManager constructor() {
     private val _discoveredDevices = MutableStateFlow<List<DiscoveredDevice>>(emptyList())
     val discoveredDevices: StateFlow<List<DiscoveredDevice>> = _discoveredDevices.asStateFlow()
@@ -107,11 +111,17 @@ class DeviceDiscoveryManager constructor() {
             }
         }
 
+        // Mark discovery as active before the asynchronous NSD callback arrives so a
+        // connection request made immediately after launch can wait for its result.
+        discoveryActive = true
+        _isDiscovering.value = true
+
         try {
             nsdManager?.discoverServices("_micyou._tcp.", NsdManager.PROTOCOL_DNS_SD, discoveryListener)
         } catch (e: Exception) {
             Logger.e("DeviceDiscovery", "Failed to start discovery", e)
             discoveryActive = false
+            _isDiscovering.value = false
         }
     }
 

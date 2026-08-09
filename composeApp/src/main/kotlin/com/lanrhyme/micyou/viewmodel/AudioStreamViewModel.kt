@@ -12,9 +12,12 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.sample
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import com.lanrhyme.micyou.audio.AudioEngine
 import com.lanrhyme.micyou.audio.AudioFormat
 import com.lanrhyme.micyou.audio.AudioLevelData
@@ -27,6 +30,7 @@ import com.lanrhyme.micyou.network.ConnectionErrorDetails
 import com.lanrhyme.micyou.network.ConnectionErrorHelper
 import com.lanrhyme.micyou.network.DeviceDiscoveryManager
 import com.lanrhyme.micyou.network.DiscoveredDevice
+import com.lanrhyme.micyou.network.selectSingleDiscoveredDevice
 import com.lanrhyme.micyou.settings.Settings
 import com.lanrhyme.micyou.settings.SettingsFactory
 import com.lanrhyme.micyou.ui.MonitoringMetricsHistory
@@ -134,16 +138,30 @@ class AudioStreamViewModel : ViewModel() {
     private var hasEstablishedStream = false
     private var autoReconnectJob: Job? = null
 
+    private data class ConnectionTarget(
+        val ipAddress: String,
+        val port: Int
+    )
+
     private companion object {
         const val UI_AUDIO_LEVEL_INTERVAL_MS = 75L
         const val AUTO_RECONNECT_MAX_ATTEMPTS = 12
         const val AUTO_RECONNECT_INITIAL_DELAY_MS = 1_000L
         const val AUTO_RECONNECT_MAX_DELAY_MS = 30_000L
+        const val DISCOVERY_CONNECT_WAIT_MS = 1_500L
     }
 
     init {
         loadSettings()
         setupAudioEngineObservers()
+        auxiliaryScope.launch {
+            discoveryManager.discoveredDevices.collect { devices ->
+                if (closed.get() || _uiState.value.mode != ConnectionMode.Wifi) return@collect
+                selectSingleDiscoveredDevice(devices)?.let { device ->
+                    applyDiscoveredDevice(device)
+                }
+            }
+        }
         if (_uiState.value.mode == ConnectionMode.Wifi) {
             discoveryManager.startDiscovery()
         }
@@ -409,21 +427,11 @@ class AudioStreamViewModel : ViewModel() {
     private suspend fun startStreamInternal(automaticRetry: Boolean = false) {
         Logger.i("AudioStreamViewModel", "Starting stream")
         val mode = _uiState.value.mode
-        val ip = _uiState.value.ipAddress
+        val target = resolveConnectionTarget(mode)
+        val ip = target.ipAddress
 
         // 端口验证：确保端口在有效范围内 (1-65535)
-        val rawPort = _uiState.value.port.toIntOrNull()
-        val port = when {
-            rawPort == null -> {
-                Logger.w("AudioStreamViewModel", "Invalid port format: ${_uiState.value.port}, using default ${Constants.DEFAULT_TCP_PORT}")
-                Constants.DEFAULT_TCP_PORT
-            }
-            rawPort <= 0 || rawPort > 65535 -> {
-                Logger.w("AudioStreamViewModel", "Port out of range: $rawPort, using default ${Constants.DEFAULT_TCP_PORT}")
-                Constants.DEFAULT_TCP_PORT
-            }
-            else -> rawPort
-        }
+        val port = target.port
 
         // IP 地址验证
         if (ip.isBlank()) {
@@ -485,6 +493,75 @@ class AudioStreamViewModel : ViewModel() {
                 )
             }
             return
+        }
+    }
+
+    private suspend fun resolveConnectionTarget(mode: ConnectionMode): ConnectionTarget {
+        if (mode == ConnectionMode.Wifi) {
+            val currentDevices = discoveryManager.discoveredDevices.value
+            val devices = if (currentDevices.isEmpty() && discoveryManager.isDiscovering.value) {
+                Logger.d(
+                    "AudioStreamViewModel",
+                    "Waiting up to ${DISCOVERY_CONNECT_WAIT_MS}ms for Wi-Fi server discovery"
+                )
+                withTimeoutOrNull(DISCOVERY_CONNECT_WAIT_MS) {
+                    discoveryManager.discoveredDevices.first { it.isNotEmpty() }
+                } ?: currentDevices
+            } else {
+                currentDevices
+            }
+
+            val discoveredDevice = selectSingleDiscoveredDevice(devices)
+            if (discoveredDevice != null && discoveredDevice.port in 1..65535) {
+                applyDiscoveredDevice(discoveredDevice)
+                return ConnectionTarget(discoveredDevice.hostAddress, discoveredDevice.port)
+            }
+        }
+
+        val state = _uiState.value
+        val rawPort = state.port.toIntOrNull()
+        val port = when {
+            rawPort == null -> {
+                Logger.w(
+                    "AudioStreamViewModel",
+                    "Invalid port format: ${state.port}, using default ${Constants.DEFAULT_TCP_PORT}"
+                )
+                Constants.DEFAULT_TCP_PORT
+            }
+            rawPort <= 0 || rawPort > 65535 -> {
+                Logger.w(
+                    "AudioStreamViewModel",
+                    "Port out of range: $rawPort, using default ${Constants.DEFAULT_TCP_PORT}"
+                )
+                Constants.DEFAULT_TCP_PORT
+            }
+            else -> rawPort
+        }
+        return ConnectionTarget(state.ipAddress, port)
+    }
+
+    private fun applyDiscoveredDevice(device: DiscoveredDevice) {
+        if (device.hostAddress.isBlank() || device.port !in 1..65535) {
+            Logger.w(
+                "AudioStreamViewModel",
+                "Ignoring invalid discovered endpoint: ${device.hostAddress}:${device.port}"
+            )
+            return
+        }
+
+        val state = _uiState.value
+        val discoveredPort = device.port.toString()
+        if (state.ipAddress == device.hostAddress && state.port == discoveredPort) return
+
+        Logger.i(
+            "AudioStreamViewModel",
+            "Using the only discovered Wi-Fi server at ${device.hostAddress}:$discoveredPort"
+        )
+        if (state.ipAddress != device.hostAddress) {
+            setIp(device.hostAddress)
+        }
+        if (_uiState.value.port != discoveredPort) {
+            setPort(discoveredPort)
         }
     }
 
@@ -618,6 +695,10 @@ class AudioStreamViewModel : ViewModel() {
                 }
             }
         }
+    }
+
+    fun selectDiscoveredDevice(device: DiscoveredDevice) {
+        applyDiscoveredDevice(device)
     }
 
     fun setPort(port: String) {

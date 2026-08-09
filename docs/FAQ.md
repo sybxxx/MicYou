@@ -32,6 +32,7 @@ Use a **stable** data cable, and set the connection mode to `USB` on **both** th
 ### 4. Wi-Fi connection
 
 Ensure your Android device and PC are on the **same network**, and set the connection mode to `Wi-Fi` on **both** the desktop app and the Android app.
+The Android app automatically uses the only discovered MicYou server. If multiple servers are found, select the intended server; manual IP and port input remains available when discovery finds none.
 
 ### Android
 
@@ -125,11 +126,11 @@ MicYou
    2. Enter the following commands:
 
       ```powershell
-      New-NetFirewallRule -DisplayName "MicYou-6000-TCP" -Direction Inbound -LocalPort 6000 -Protocol TCP -Action Allow
-      New-NetFirewallRule -DisplayName "MicYou-6001-UDP" -Direction Inbound -LocalPort 6001 -Protocol UDP -Action Allow
+      New-NetFirewallRule -DisplayName "MicYou-8554-TCP" -Direction Inbound -LocalPort 8554 -Protocol TCP -Action Allow
+      New-NetFirewallRule -DisplayName "MicYou-8555-UDP" -Direction Inbound -LocalPort 8555 -Protocol UDP -Action Allow
       ```
 
-      > MicYou uses TCP port `6000` (control) and UDP port `6001` (audio data) by default. Change the port numbers if you have configured a different port.
+      > MicYou uses TCP port `8554` (control) and UDP port `8555` (audio data) by default. Change the port numbers if you have configured a different port.
 
       If no error appears, the operation was successful. Try connecting again.
 

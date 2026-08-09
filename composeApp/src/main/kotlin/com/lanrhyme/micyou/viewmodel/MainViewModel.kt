@@ -333,10 +333,7 @@ class MainViewModel : ViewModel() {
     fun startDiscovery() = audioStreamViewModel.startDiscovery()
     fun stopDiscovery() = audioStreamViewModel.stopDiscovery()
     fun restartDiscovery() = audioStreamViewModel.restartDiscovery()
-    fun selectDiscoveredDevice(device: DiscoveredDevice) {
-        audioStreamViewModel.setIp(device.hostAddress)
-        audioStreamViewModel.setPort(device.port.toString())
-    }
+    fun selectDiscoveredDevice(device: DiscoveredDevice) = audioStreamViewModel.selectDiscoveredDevice(device)
     fun setIp(ip: String, isAutoSelect: Boolean = false, restartStream: Boolean = false) = audioStreamViewModel.setIp(ip, isAutoSelect, restartStream)
     fun setPort(port: String) = audioStreamViewModel.setPort(port)
     fun setMonitoringEnabled(enabled: Boolean) = audioStreamViewModel.setMonitoringEnabled(enabled)
