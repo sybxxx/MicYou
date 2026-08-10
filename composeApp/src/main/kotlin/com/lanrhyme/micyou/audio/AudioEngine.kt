@@ -1408,6 +1408,10 @@ class AudioEngine constructor() {
             Logger.w("AudioEngine", "Audio context is unavailable; foreground service was not started")
             return
         }
+        if (AudioService.isRunning()) {
+            AudioService.updateStatusIfRunning(AudioService.STATUS_CONNECTING)
+            return
+        }
         val intent = Intent(context, AudioService::class.java).apply {
             action = AudioService.ACTION_START
             putExtra(AudioService.EXTRA_USE_WIFI_LOCK, mode == ConnectionMode.Wifi)
@@ -1422,6 +1426,7 @@ class AudioEngine constructor() {
 
     private fun updateStreamingNotification(status: String) {
         val context = ContextHelper.getContext() ?: return
+        if (AudioService.updateStatusIfRunning(status)) return
         try {
             val intent = Intent(context, AudioService::class.java).apply {
                 action = AudioService.ACTION_UPDATE_STATUS

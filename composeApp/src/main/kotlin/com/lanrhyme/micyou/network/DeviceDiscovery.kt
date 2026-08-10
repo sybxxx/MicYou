@@ -3,6 +3,7 @@ package com.lanrhyme.micyou.network
 import android.content.Context
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
+import android.net.wifi.WifiManager
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -32,7 +33,10 @@ class DeviceDiscoveryManager constructor() {
 
     private var nsdManager: NsdManager? = null
     private var discoveryListener: NsdManager.DiscoveryListener? = null
+    @Volatile
+    private var discoveryGeneration = 0L
     private var discoveryActive = false
+    private var multicastLock: WifiManager.MulticastLock? = null
     private val pendingResolution: MutableSet<String> = Collections.synchronizedSet(mutableSetOf<String>())
 
     fun startDiscovery() {
@@ -47,26 +51,32 @@ class DeviceDiscoveryManager constructor() {
             Logger.w("DeviceDiscovery", "NsdManager not available")
             return
         }
+        acquireMulticastLock(context)
 
+        val generation = ++discoveryGeneration
         discoveryListener = object : NsdManager.DiscoveryListener {
             override fun onDiscoveryStarted(serviceType: String) {
+                if (generation != discoveryGeneration) return
                 Logger.i("DeviceDiscovery", "Discovery started for $serviceType")
                 discoveryActive = true
                 _isDiscovering.value = true
             }
 
             override fun onServiceFound(serviceInfo: NsdServiceInfo) {
+                if (generation != discoveryGeneration) return
                 val name = serviceInfo.serviceName
                 if (name !in pendingResolution) {
                     pendingResolution.add(name)
                     try {
                         nsdManager?.resolveService(serviceInfo, object : NsdManager.ResolveListener {
                             override fun onResolveFailed(info: NsdServiceInfo, errorCode: Int) {
+                                if (generation != discoveryGeneration) return
                                 Logger.w("DeviceDiscovery", "Resolve failed: $errorCode for ${info.serviceName}")
                                 pendingResolution.remove(info.serviceName)
                             }
 
                             override fun onServiceResolved(info: NsdServiceInfo) {
+                                if (generation != discoveryGeneration) return
                                 pendingResolution.remove(info.serviceName)
                                 val host = info.host?.hostAddress ?: return
                                 val port = info.port
@@ -88,25 +98,32 @@ class DeviceDiscoveryManager constructor() {
             }
 
             override fun onServiceLost(serviceInfo: NsdServiceInfo) {
+                if (generation != discoveryGeneration) return
                 Logger.i("DeviceDiscovery", "Service lost: ${serviceInfo.serviceName}")
+                pendingResolution.remove(serviceInfo.serviceName)
                 _discoveredDevices.update { current ->
                     current.filterNot { it.name == serviceInfo.serviceName }
                 }
             }
 
             override fun onDiscoveryStopped(serviceType: String) {
+                if (generation != discoveryGeneration) return
                 Logger.i("DeviceDiscovery", "Discovery stopped")
                 discoveryActive = false
                 _isDiscovering.value = false
+                releaseMulticastLock()
             }
 
             override fun onStartDiscoveryFailed(serviceType: String, errorCode: Int) {
+                if (generation != discoveryGeneration) return
                 Logger.w("DeviceDiscovery", "Discovery start failed: $errorCode")
                 discoveryActive = false
                 _isDiscovering.value = false
+                releaseMulticastLock()
             }
 
             override fun onStopDiscoveryFailed(serviceType: String, errorCode: Int) {
+                if (generation != discoveryGeneration) return
                 Logger.w("DeviceDiscovery", "Discovery stop failed: $errorCode")
             }
         }
@@ -122,20 +139,44 @@ class DeviceDiscoveryManager constructor() {
             Logger.e("DeviceDiscovery", "Failed to start discovery", e)
             discoveryActive = false
             _isDiscovering.value = false
+            releaseMulticastLock()
         }
     }
 
     fun stopDiscovery() {
-        if (!discoveryActive) return
-        try {
-            discoveryListener?.let { nsdManager?.stopServiceDiscovery(it) }
-        } catch (e: Exception) {
-            Logger.w("DeviceDiscovery", "Error stopping discovery: ${e.message}")
+        discoveryGeneration++
+        if (discoveryActive) {
+            try {
+                discoveryListener?.let { nsdManager?.stopServiceDiscovery(it) }
+            } catch (e: Exception) {
+                Logger.w("DeviceDiscovery", "Error stopping discovery: ${e.message}")
+            }
         }
         discoveryListener = null
         discoveryActive = false
         _isDiscovering.value = false
         pendingResolution.clear()
+        releaseMulticastLock()
         // Don't clear device list here — let restartDiscovery() manage it
+    }
+
+    private fun acquireMulticastLock(context: Context) {
+        if (multicastLock?.isHeld == true) return
+        try {
+            @Suppress("DEPRECATION")
+            multicastLock = (context.getSystemService(Context.WIFI_SERVICE) as? WifiManager)
+                ?.createMulticastLock("${context.packageName}:micyou-discovery")
+                ?.apply {
+                    setReferenceCounted(false)
+                    acquire()
+                }
+        } catch (e: Exception) {
+            Logger.w("DeviceDiscovery", "Failed to acquire Wi-Fi multicast lock: ${e.message}")
+        }
+    }
+
+    private fun releaseMulticastLock() {
+        multicastLock?.let { if (it.isHeld) it.release() }
+        multicastLock = null
     }
 }

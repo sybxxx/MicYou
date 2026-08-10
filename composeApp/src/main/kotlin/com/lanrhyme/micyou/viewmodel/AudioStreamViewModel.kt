@@ -7,7 +7,6 @@ import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -18,6 +17,7 @@ import kotlinx.coroutines.flow.sample
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.channels.Channel
 import com.lanrhyme.micyou.audio.AudioEngine
 import com.lanrhyme.micyou.audio.AudioFormat
 import com.lanrhyme.micyou.audio.AudioLevelData
@@ -31,6 +31,7 @@ import com.lanrhyme.micyou.network.ConnectionErrorHelper
 import com.lanrhyme.micyou.network.DeviceDiscoveryManager
 import com.lanrhyme.micyou.network.DiscoveredDevice
 import com.lanrhyme.micyou.network.selectSingleDiscoveredDevice
+import com.lanrhyme.micyou.network.WifiNetworkMonitor
 import com.lanrhyme.micyou.settings.Settings
 import com.lanrhyme.micyou.settings.SettingsFactory
 import com.lanrhyme.micyou.ui.MonitoringMetricsHistory
@@ -118,6 +119,8 @@ class AudioStreamViewModel : ViewModel() {
 
     // 设备发现
     private val discoveryManager = DeviceDiscoveryManager()
+    private val wifiNetworkMonitor = WifiNetworkMonitor()
+    private val reconnectWakeup = Channel<Unit>(Channel.CONFLATED)
     val discoveredDevices: StateFlow<List<DiscoveredDevice>> = discoveryManager.discoveredDevices
     val isDiscovering: StateFlow<Boolean> = discoveryManager.isDiscovering
 
@@ -145,7 +148,6 @@ class AudioStreamViewModel : ViewModel() {
 
     private companion object {
         const val UI_AUDIO_LEVEL_INTERVAL_MS = 75L
-        const val AUTO_RECONNECT_MAX_ATTEMPTS = 12
         const val AUTO_RECONNECT_INITIAL_DELAY_MS = 1_000L
         const val AUTO_RECONNECT_MAX_DELAY_MS = 30_000L
         const val DISCOVERY_CONNECT_WAIT_MS = 1_500L
@@ -154,6 +156,21 @@ class AudioStreamViewModel : ViewModel() {
     init {
         loadSettings()
         setupAudioEngineObservers()
+        auxiliaryScope.launch {
+            wifiNetworkMonitor.networkAvailableEvents.collect {
+                if (closed.get() || _uiState.value.mode != ConnectionMode.Wifi) return@collect
+                Logger.i("AudioStreamViewModel", "Wi-Fi network restored; refreshing discovery")
+                discoveryManager.stopDiscovery()
+                discoveryManager.startDiscovery()
+                reconnectWakeup.trySend(Unit)
+                if (userWantsStreaming && hasEstablishedStream &&
+                    _audioEngine.currentStreamState() == StreamState.Error
+                ) {
+                    scheduleAutoReconnect()
+                }
+            }
+        }
+        wifiNetworkMonitor.start()
         auxiliaryScope.launch {
             discoveryManager.discoveredDevices.collect { devices ->
                 if (closed.get() || _uiState.value.mode != ConnectionMode.Wifi) return@collect
@@ -580,16 +597,19 @@ class AudioStreamViewModel : ViewModel() {
             try {
                 while (
                     userWantsStreaming &&
-                    attempt < AUTO_RECONNECT_MAX_ATTEMPTS &&
                     _uiState.value.streamState == StreamState.Error
                 ) {
-                    delay(delayMs)
+                    // A restored network wakes the backoff immediately. Otherwise keep a
+                    // single bounded-rate retry loop alive until the user stops streaming.
+                    withTimeoutOrNull(delayMs) {
+                        reconnectWakeup.receive()
+                    }
                     if (!userWantsStreaming) break
 
                     attempt++
                     Logger.i(
                         "AudioStreamViewModel",
-                        "Retrying Wi-Fi stream after connection loss (attempt $attempt/$AUTO_RECONNECT_MAX_ATTEMPTS)"
+                        "Retrying Wi-Fi stream after connection loss (attempt $attempt)"
                     )
                     isStartStreamRequestPending = true
                     try {
@@ -602,9 +622,6 @@ class AudioStreamViewModel : ViewModel() {
                     delayMs = (delayMs * 2).coerceAtMost(AUTO_RECONNECT_MAX_DELAY_MS)
                 }
 
-                if (userWantsStreaming && _uiState.value.streamState != StreamState.Streaming) {
-                    _uiState.update { it.copy(showErrorDialog = true) }
-                }
             } finally {
                 autoReconnectJob = null
             }
@@ -910,7 +927,9 @@ class AudioStreamViewModel : ViewModel() {
         userWantsStreaming = false
         autoReconnectJob?.cancel()
         autoReconnectJob = null
+        reconnectWakeup.close()
         discoveryManager.stopDiscovery()
+        wifiNetworkMonitor.stop()
         val engineCloseJob = _audioEngine.close()
         auxiliaryScope.cancel()
         closeJob = engineCloseJob

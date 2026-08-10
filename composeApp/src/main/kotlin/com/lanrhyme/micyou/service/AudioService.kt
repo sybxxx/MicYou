@@ -16,6 +16,7 @@ import android.app.PendingIntent
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.runBlocking
+import java.lang.ref.WeakReference
 import com.lanrhyme.micyou.audio.AudioEngine
 import com.lanrhyme.micyou.service.AudioService
 import com.lanrhyme.micyou.util.AppLanguage
@@ -24,6 +25,7 @@ class AudioService : Service() {
 
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
+    private var multicastLock: WifiManager.MulticastLock? = null
     private var useWifiLock = false
 
     companion object {
@@ -38,10 +40,23 @@ class AudioService : Service() {
         const val STATUS_CONNECTING = "connecting"
         const val STATUS_STREAMING = "streaming"
         const val STATUS_RECONNECTING = "reconnecting"
+
+        @Volatile
+        private var serviceReference: WeakReference<AudioService>? = null
+
+        fun isRunning(): Boolean = serviceReference?.get() != null
+
+        /** Updates an existing foreground service without starting a new service from the background. */
+        fun updateStatusIfRunning(status: String): Boolean {
+            val service = serviceReference?.get() ?: return false
+            service.updateNotification(status)
+            return true
+        }
     }
 
     override fun onCreate() {
         super.onCreate()
+        serviceReference = WeakReference(this)
         createNotificationChannel()
     }
 
@@ -122,6 +137,23 @@ class AudioService : Service() {
             wifiLock?.let { if (it.isHeld) it.release() }
             wifiLock = null
         }
+
+        if (useWifiLock && multicastLock?.isHeld != true) {
+            try {
+                @Suppress("DEPRECATION")
+                multicastLock = (applicationContext.getSystemService(WIFI_SERVICE) as WifiManager)
+                    .createMulticastLock("$packageName:micyou-discovery")
+                    .apply {
+                        setReferenceCounted(false)
+                        acquire()
+                    }
+            } catch (e: Exception) {
+                Log.w("AudioService", "Failed to acquire Wi-Fi multicast lock", e)
+            }
+        } else if (!useWifiLock) {
+            multicastLock?.let { if (it.isHeld) it.release() }
+            multicastLock = null
+        }
     }
 
     private fun releaseSessionLocks() {
@@ -129,6 +161,8 @@ class AudioService : Service() {
         wakeLock = null
         wifiLock?.let { if (it.isHeld) it.release() }
         wifiLock = null
+        multicastLock?.let { if (it.isHeld) it.release() }
+        multicastLock = null
     }
 
     private fun stopForegroundService() {
@@ -139,6 +173,9 @@ class AudioService : Service() {
 
     override fun onDestroy() {
         releaseSessionLocks()
+        if (serviceReference?.get() === this) {
+            serviceReference = null
+        }
         super.onDestroy()
     }
 
