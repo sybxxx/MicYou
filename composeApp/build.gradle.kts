@@ -116,6 +116,8 @@ dependencies {
     implementation(libs.filekit.dialogs.compose)
     implementation(libs.materialKolor)
 
+    testImplementation(libs.kotlin.test.junit)
+
     debugImplementation(libs.androidx.compose.ui.tooling)
 }
 

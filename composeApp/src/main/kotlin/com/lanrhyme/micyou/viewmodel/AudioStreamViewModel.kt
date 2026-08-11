@@ -99,6 +99,16 @@ data class AudioStreamUiState(
     val showMonitoringPanel: Boolean = false
 )
 
+internal fun shouldContinueWifiAutoReconnect(
+    userWantsStreaming: Boolean,
+    hasEstablishedStream: Boolean,
+    mode: ConnectionMode,
+    engineState: StreamState
+): Boolean = userWantsStreaming &&
+    hasEstablishedStream &&
+    mode == ConnectionMode.Wifi &&
+    engineState != StreamState.Streaming
+
 @OptIn(FlowPreview::class)
 class AudioStreamViewModel : ViewModel() {
     private val _audioEngine = AudioEngine()
@@ -595,16 +605,27 @@ class AudioStreamViewModel : ViewModel() {
             var attempt = 0
             var delayMs = AUTO_RECONNECT_INITIAL_DELAY_MS
             try {
-                while (
-                    userWantsStreaming &&
-                    _uiState.value.streamState == StreamState.Error
+                while (shouldContinueWifiAutoReconnect(
+                        userWantsStreaming = userWantsStreaming,
+                        hasEstablishedStream = hasEstablishedStream,
+                        mode = _uiState.value.mode,
+                        engineState = _audioEngine.currentStreamState()
+                    )
                 ) {
                     // A restored network wakes the backoff immediately. Otherwise keep a
                     // single bounded-rate retry loop alive until the user stops streaming.
                     withTimeoutOrNull(delayMs) {
                         reconnectWakeup.receive()
                     }
-                    if (!userWantsStreaming) break
+                    if (!shouldContinueWifiAutoReconnect(
+                            userWantsStreaming = userWantsStreaming,
+                            hasEstablishedStream = hasEstablishedStream,
+                            mode = _uiState.value.mode,
+                            engineState = _audioEngine.currentStreamState()
+                        )
+                    ) {
+                        break
+                    }
 
                     attempt++
                     Logger.i(
@@ -618,7 +639,15 @@ class AudioStreamViewModel : ViewModel() {
                         isStartStreamRequestPending = false
                     }
 
-                    if (_uiState.value.streamState == StreamState.Streaming) return@launch
+                    val engineState = _audioEngine.currentStreamState()
+                    if (engineState == StreamState.Streaming) return@launch
+                    if (_uiState.value.streamState != engineState) {
+                        Logger.w(
+                            "AudioStreamViewModel",
+                            "Resynchronizing retry state from ${_uiState.value.streamState} to $engineState"
+                        )
+                        _uiState.update { it.copy(streamState = engineState) }
+                    }
                     delayMs = (delayMs * 2).coerceAtMost(AUTO_RECONNECT_MAX_DELAY_MS)
                 }
 

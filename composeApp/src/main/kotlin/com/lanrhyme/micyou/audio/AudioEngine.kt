@@ -101,6 +101,14 @@ internal fun classifyAudioRead(
     else -> AudioReadStatus.Waiting
 }
 
+internal fun shouldReuseActiveAudioSession(
+    desiredRunning: Boolean,
+    hasActiveJob: Boolean,
+    state: StreamState
+): Boolean = desiredRunning &&
+    hasActiveJob &&
+    (state == StreamState.Connecting || state == StreamState.Streaming)
+
 /** Process-wide single-owner state machine for a native resource. */
 internal class RecorderOwnerGate<T : Any> {
     internal sealed interface State<T : Any> {
@@ -495,7 +503,12 @@ class AudioEngine constructor() {
                         stopTimedOutJob = null
                         stopTimedOutResources = null
                     }
-                    if (wasDesiredRunning && job?.isCompleted == false) {
+                    if (shouldReuseActiveAudioSession(
+                            desiredRunning = wasDesiredRunning,
+                            hasActiveJob = job?.isCompleted == false,
+                            state = _state.value
+                        )
+                    ) {
                         Logger.w("AudioEngine", "AudioEngine already running, ignoring start request")
                         connectionComplete.complete(Unit)
                         startIgnored = true
