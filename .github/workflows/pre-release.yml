@@ -267,7 +267,7 @@ jobs:
 
   # ----------------- 发布 Pre-release -----------------
   pre-release:
-    needs: [build-tauri-windows, build-tauri-linux, build-tauri-macos]
+    needs: [build-android, build-tauri-windows, build-tauri-linux, build-tauri-macos]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
