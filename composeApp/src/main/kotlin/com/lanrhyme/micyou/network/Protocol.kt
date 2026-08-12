@@ -107,7 +107,11 @@ data class PluginSyncMessage(
 @Serializable
 data class PingMessage(
     @ProtoNumber(1)
-    val timestamp: Long
+    val timestamp: Long,
+    @ProtoNumber(2)
+    val audioHealthSupported: Boolean = false,
+    @ProtoNumber(3)
+    val audioHealthy: Boolean = false
 )
 
 @OptIn(ExperimentalSerializationApi::class)

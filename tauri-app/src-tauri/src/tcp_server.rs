@@ -31,6 +31,7 @@ const FRAME_READ_TIMEOUT: Duration = Duration::from_secs(10);
 const FRAME_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 const CLIENT_SHUTDOWN_GRACE_PERIOD: Duration = Duration::from_millis(250);
 const AUDIO_STALL_TIMEOUT: Duration = Duration::from_secs(10);
+const AUDIO_HEALTH_TIMEOUT: Duration = Duration::from_secs(3);
 static NEXT_CONNECTION_ID: AtomicU64 = AtomicU64::new(1);
 
 #[cfg(windows)]
@@ -328,6 +329,23 @@ fn audio_stalled(
     now_ms.saturating_sub(baseline) > AUDIO_STALL_TIMEOUT.as_millis() as u64
 }
 
+fn audio_health_is_healthy(
+    now_ms: u64,
+    tcp_connected_ms: u64,
+    last_audio_ms: u64,
+    client_muted: bool,
+) -> bool {
+    if client_muted || tcp_connected_ms == 0 {
+        return true;
+    }
+    let baseline = if last_audio_ms == 0 {
+        tcp_connected_ms
+    } else {
+        last_audio_ms
+    };
+    now_ms.saturating_sub(baseline) <= AUDIO_HEALTH_TIMEOUT.as_millis() as u64
+}
+
 fn heartbeat_stalled(now_ms: u64, tcp_connected_ms: u64, last_pong_ms: u64) -> bool {
     if tcp_connected_ms == 0 {
         return false;
@@ -580,20 +598,29 @@ async fn handle_client(
     });
 
     let tx_ping = tx.clone();
+    let stats_ping = stats.clone();
     let ping_task = tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_millis(500));
         loop {
             interval.tick().await;
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64;
             let ping_msg = MessageWrapper {
                 audio_packet: None,
                 connect: None,
                 mute: None,
                 plugin_sync: None,
                 ping: Some(micyou_protocol::micyou::PingMessage {
-                    timestamp: std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap()
-                        .as_millis() as i64,
+                    timestamp: now_ms as i64,
+                    audio_health_supported: true,
+                    audio_healthy: audio_health_is_healthy(
+                        now_ms,
+                        stats_ping.get_tcp_connected_time(),
+                        stats_ping.get_last_audio_time(),
+                        stats_ping.is_client_muted(),
+                    ),
                 }),
                 pong: None,
             };
@@ -847,6 +874,14 @@ mod tests {
     fn audio_stall_watchdog_uses_connection_time_until_first_packet() {
         assert!(!audio_stalled(10_000, 1, 0, false));
         assert!(audio_stalled(10_002, 1, 0, false));
+    }
+
+    #[test]
+    fn audio_health_has_a_startup_grace_period_and_detects_stalled_audio() {
+        assert!(audio_health_is_healthy(3_000, 1_000, 0, false));
+        assert!(!audio_health_is_healthy(4_001, 1_000, 0, false));
+        assert!(audio_health_is_healthy(10_000, 1_000, 0, true));
+        assert!(audio_health_is_healthy(20_000, 1_000, 19_000, false));
     }
 
     #[test]

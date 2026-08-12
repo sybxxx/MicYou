@@ -101,6 +101,18 @@ internal fun classifyAudioRead(
     else -> AudioReadStatus.Waiting
 }
 
+internal const val SERVER_AUDIO_HEALTH_TIMEOUT_MS = 4_000L
+
+internal fun shouldFailForServerAudioHealth(
+    supported: Boolean,
+    muted: Boolean,
+    nowMs: Long,
+    lastHealthyAudioHealthMs: Long
+): Boolean = supported &&
+    !muted &&
+    nowMs >= lastHealthyAudioHealthMs &&
+    nowMs - lastHealthyAudioHealthMs >= SERVER_AUDIO_HEALTH_TIMEOUT_MS
+
 internal fun shouldReuseActiveAudioSession(
     desiredRunning: Boolean,
     hasActiveJob: Boolean,
@@ -537,6 +549,9 @@ class AudioEngine constructor() {
                     var sessionAutomaticGainControl: AutomaticGainControl? = null
                     var sessionUdpConsecutiveFailures = 0
                     var sessionLastPingReceivedTime = System.currentTimeMillis()
+                    val serverAudioHealthSupported = AtomicBoolean(false)
+                    val lastHealthyAudioHealthTime = AtomicLong(SystemClock.elapsedRealtime())
+                    val serverAudioUnhealthyNotified = AtomicBoolean(false)
                     val channel = Channel<MessageWrapper>(capacity = 64, onBufferOverflow = BufferOverflow.DROP_OLDEST)
                     startStopMutex.withLock {
                         if (lifecycleGeneration == sessionGeneration && desiredRunning) {
@@ -820,6 +835,23 @@ class AudioEngine constructor() {
 
                                                 if (wrapper.ping != null) {
                                                     sessionLastPingReceivedTime = System.currentTimeMillis()
+                                                    if (wrapper.ping.audioHealthSupported) {
+                                                        val healthNow = SystemClock.elapsedRealtime()
+                                                        if (serverAudioHealthSupported.compareAndSet(false, true)) {
+                                                            // Start the health timeout when the first compatible
+                                                            // health signal arrives, not when socket setup began.
+                                                            lastHealthyAudioHealthTime.set(healthNow)
+                                                        }
+                                                        if (wrapper.ping.audioHealthy || _isMuted.value) {
+                                                            lastHealthyAudioHealthTime.set(healthNow)
+                                                            if (serverAudioUnhealthyNotified.compareAndSet(true, false)) {
+                                                                Logger.i("AudioEngine", "Desktop audio stream recovered")
+                                                                if (desiredRunning && hasEstablishedStream) {
+                                                                    updateStreamingNotification(AudioService.STATUS_STREAMING)
+                                                                }
+                                                            }
+                                                        }
+                                                    }
                                                     channel.send(MessageWrapper(pong = PongMessage(wrapper.ping.timestamp)))
                                                 }
                                             } catch (e: Exception) {
@@ -861,6 +893,21 @@ class AudioEngine constructor() {
                             if (readerJob != null && (readerJob.isCancelled || readerJob.isCompleted)) throw Exception("Reader job failed - connection lost")
                             if (readerJob != null && System.currentTimeMillis() - sessionLastPingReceivedTime > HEARTBEAT_TIMEOUT_MS) {
                                 throw Exception("Heartbeat timeout - server unreachable ($HEARTBEAT_TIMEOUT_MS ms)")
+                            }
+                            if (readerJob != null && shouldFailForServerAudioHealth(
+                                    supported = serverAudioHealthSupported.get(),
+                                    muted = _isMuted.value,
+                                    nowMs = SystemClock.elapsedRealtime(),
+                                    lastHealthyAudioHealthMs = lastHealthyAudioHealthTime.get()
+                                )
+                            ) {
+                                if (serverAudioUnhealthyNotified.compareAndSet(false, true)) {
+                                    Logger.w("AudioEngine", "Desktop is connected but reports no recent audio packets")
+                                    if (desiredRunning && hasEstablishedStream) {
+                                        updateStreamingNotification(AudioService.STATUS_RECONNECTING)
+                                    }
+                                }
+                                throw Exception("Server audio health timeout - no audio packets acknowledged")
                             }
 
                             var readBytes = 0
