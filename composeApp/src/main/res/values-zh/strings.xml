@@ -404,6 +404,8 @@
     <string name="app_name">MicYou</string>
     <string name="streaming_notification_title">MicYou 正在传输</string>
     <string name="streaming_notification_text">点击断开连接</string>
+    <string name="notification_idle_title">MicYou 已开启</string>
+    <string name="notification_idle_text">点击管理</string>
     <string name="streaming_notification_connecting">正在连接电脑端...</string>
     <string name="streaming_notification_reconnecting">正在重新连接电脑端...</string>
     <string name="qs_tile_label">MicYou</string>

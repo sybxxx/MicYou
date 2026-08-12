@@ -1469,8 +1469,12 @@ class AudioEngine constructor() {
             return
         }
         if (AudioService.isRunning()) {
-            AudioService.updateStatusIfRunning(AudioService.STATUS_CONNECTING)
-            return
+            if (AudioService.updateStatusIfRunning(
+                    AudioService.STATUS_CONNECTING,
+                    useWifiLock = mode == ConnectionMode.Wifi
+                )) {
+                return
+            }
         }
         val intent = Intent(context, AudioService::class.java).apply {
             action = AudioService.ACTION_START
@@ -1492,7 +1496,11 @@ class AudioEngine constructor() {
                 action = AudioService.ACTION_UPDATE_STATUS
                 putExtra(AudioService.EXTRA_STATUS, status)
             }
-            context.startService(intent)
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                context.startForegroundService(intent)
+            } else {
+                context.startService(intent)
+            }
         } catch (e: Exception) {
             Logger.w("AudioEngine", "Failed to update streaming notification: ${e.message}")
         }

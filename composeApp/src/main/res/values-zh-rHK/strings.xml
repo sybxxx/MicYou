@@ -404,6 +404,8 @@
     <string name="app_name">MicYou</string>
     <string name="streaming_notification_title">MicYou 傳輸緊</string>
     <string name="streaming_notification_text">撳掣斷開連線</string>
+    <string name="notification_idle_title">MicYou 開咗</string>
+    <string name="notification_idle_text">撳掣管理</string>
     <string name="streaming_notification_connecting">連緊電腦...</string>
     <string name="streaming_notification_reconnecting">重新連緊電腦...</string>
     <string name="qs_tile_label">MicYou</string>

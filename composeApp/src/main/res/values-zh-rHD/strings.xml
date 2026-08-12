@@ -403,4 +403,6 @@
     <string name="errorIpChangeRestartFailed">IP 切换后重新连接失败: %s</string>
     <string name="firstLaunchDownloadPc">下载电脑终端项</string>
     <string name="errorSuggestionCheckSettings">检查系统设定中的应用程式权限项</string>
+    <string name="notification_idle_title">MicYou 已开启</string>
+    <string name="notification_idle_text">点击管理</string>
 </resources>

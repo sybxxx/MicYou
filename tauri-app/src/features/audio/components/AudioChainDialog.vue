@@ -1,7 +1,7 @@
 <template>
   <Transition name="dialog">
   <div v-if="isOpen" class="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm" @click.self="close">
-    <div class="bg-surface rounded-3xl w-full max-w-sm shadow-xl overflow-hidden flex flex-col">
+    <div class="bg-surface rounded-3xl w-full max-w-sm max-h-[80vh] shadow-xl overflow-hidden flex flex-col">
       <!-- Header -->
       <div class="flex justify-between items-center p-6 pb-2">
         <div>
@@ -19,11 +19,11 @@
       </div>
 
       <!-- Content -->
-      <div class="p-6">
+      <div class="p-6 overflow-y-auto min-h-0">
         <div class="flex flex-col gap-2 relative">
           <div v-for="(item, index) in localChain" :key="item"
                :data-index="index"
-               class="flex items-center bg-surface-container rounded-xl p-3 border-2 transition-all shadow-sm group select-none relative"
+               class="flex min-w-0 items-center bg-surface-container rounded-xl p-3 border-2 transition-all shadow-sm group select-none relative"
                :class="draggedIndex === index ? 'opacity-40 border-primary scale-[0.98] pointer-events-none' : 'border-transparent hover:border-primary/30'">
             
             <template v-if="item !== 'AEC'">
@@ -42,7 +42,7 @@
               {{ index + 1 }}
             </div>
             
-            <span class="text-sm font-bold text-on-surface flex-1 pointer-events-none">{{ $t(`settings.audioChain.${item}`) }}</span>
+            <span class="text-sm font-bold text-on-surface flex-1 min-w-0 truncate pointer-events-none">{{ $t(`settings.audioChain.${item}`) }}</span>
           </div>
         </div>
       </div>

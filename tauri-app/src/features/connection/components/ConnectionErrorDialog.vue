@@ -37,7 +37,7 @@
           <a
             v-if="details.showHelp && details.helpUrl"
             :href="details.helpUrl"
-            target="_blank"
+            @click.prevent="openHelp(details.helpUrl)"
             class="px-4 py-2 rounded-xl text-sm font-medium text-primary hover:bg-primary/10 transition-colors"
           >
             {{ $t('error.dialog.help') }}
@@ -63,6 +63,7 @@
 
 <script setup lang="ts">
 import type { ConnectionErrorDetails } from '../utils/connectionError';
+import { openUrl } from '@tauri-apps/plugin-opener';
 
 defineProps<{
   show: boolean;
@@ -73,6 +74,10 @@ const emit = defineEmits<{
   (e: 'dismiss'): void;
   (e: 'retry'): void;
 }>();
+
+const openHelp = (url: string) => {
+  void openUrl(url);
+};
 </script>
 
 <style scoped>

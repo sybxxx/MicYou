@@ -20,7 +20,7 @@
                 class="settings-nav-item"
                 :class="currentSection === section.id ? 'bg-secondary-container/80 text-on-secondary-container shadow-sm scale-[1.02]' : 'hover:bg-surface-variant/30 text-on-surface-variant'">
           <component :is="section.icon" class="w-5 h-5" :class="currentSection === section.id ? 'text-primary' : ''" />
-          <span class="font-medium text-sm">{{ section.name }}</span>
+          <span class="font-medium text-sm">{{ section.nameKey ? $t(section.nameKey) : section.name }}</span>
         </button>
       </div>
 
@@ -959,18 +959,29 @@ async function switchToTui() {
   }
 }
 
-const sections = computed(() => [
-  { id: 'general', name: t('settings.categories.general'), icon: SettingsIcon },
-  { id: 'appearance', name: t('settings.categories.appearance'), icon: Palette },
-  { id: 'audio', name: t('settings.categories.audio'), icon: Mic },
-  { id: 'equalizer', name: t('settings.equalizer.title'), icon: SlidersHorizontal },
-  { id: 'plugins', name: t('settings.categories.plugins'), icon: Puzzle },
-  { id: 'about', name: t('settings.categories.about'), icon: Info },
+interface SettingsSection {
+  id: string;
+  name?: string;
+  nameKey?: string;
+  icon: typeof SettingsIcon;
+}
+
+const sections = computed<SettingsSection[]>(() => [
+  { id: 'general', nameKey: 'settings.categories.general', icon: SettingsIcon },
+  { id: 'appearance', nameKey: 'settings.categories.appearance', icon: Palette },
+  { id: 'audio', nameKey: 'settings.categories.audio', icon: Mic },
+  { id: 'equalizer', nameKey: 'settings.equalizer.title', icon: SlidersHorizontal },
+  { id: 'plugins', nameKey: 'settings.categories.plugins', icon: Puzzle },
+  { id: 'about', nameKey: 'settings.categories.about', icon: Info },
 ]);
 
 const contentRef = ref<HTMLElement | null>(null);
 const currentSection = ref('general');
-const currentSectionName = computed(() => sections.value.find(s => s.id === currentSection.value)?.name);
+const currentSectionName = computed(() => {
+  const section = sections.value.find((item) => item.id === currentSection.value);
+  if (!section) return '';
+  return section.nameKey ? t(section.nameKey) : (section.name ?? '');
+});
 
 watch(currentSection, () => {
   contentRef.value?.scrollTo({ top: 0 });

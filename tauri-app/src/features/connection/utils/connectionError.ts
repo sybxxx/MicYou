@@ -1,5 +1,9 @@
 import type { Composer } from 'vue-i18n'
 
+/** 帮助文档链接（按错误类型针对性跳转） */
+const QUICK_START_URL = 'https://micyou.top/docs/quick-start'
+const FAQ_URL = 'https://micyou.top/docs/faq'
+
 export type ConnectionErrorType =
   | 'NetworkTimeout'
   | 'NetworkUnreachable'
@@ -135,7 +139,7 @@ export function generateErrorDetails(
           t('error.suggestion.runAsAdmin'),
         ],
         showHelp: true,
-        helpUrl: 'https://github.com/LanRhyme/MicYou/blob/master/docs/FAQ.md#firewall',
+        helpUrl: FAQ_URL,
       }
 
     case 'PermissionDenied':
@@ -170,7 +174,7 @@ export function generateErrorDetails(
             : []),
         ],
         showHelp: true,
-        helpUrl: 'https://github.com/LanRhyme/MicYou/blob/master/docs/FAQ.md#usb',
+        helpUrl: FAQ_URL,
       }
 
     case 'AdbCommandFailed':
@@ -185,7 +189,7 @@ export function generateErrorDetails(
             : []),
         ],
         showHelp: true,
-        helpUrl: 'https://github.com/LanRhyme/MicYou/blob/master/docs/FAQ.md#usb',
+        helpUrl: QUICK_START_URL,
       }
 
     case 'HandshakeFailed':
@@ -242,7 +246,7 @@ export function generateErrorDetails(
           t('error.suggestion.checkVersion'),
         ],
         showHelp: true,
-        helpUrl: 'https://github.com/LanRhyme/MicYou/releases',
+        helpUrl: QUICK_START_URL,
       }
 
     case 'AdminPrivilegeRequired':
@@ -263,7 +267,7 @@ export function generateErrorDetails(
           t('error.suggestion.runAsAdmin'),
         ],
         showHelp: true,
-        helpUrl: 'https://github.com/LanRhyme/MicYou/blob/master/docs/FAQ.md#firewall',
+        helpUrl: FAQ_URL,
       }
 
     case 'UnknownError':
@@ -277,7 +281,7 @@ export function generateErrorDetails(
           t('error.suggestion.checkLogs'),
         ],
         showHelp: true,
-        helpUrl: 'https://github.com/LanRhyme/MicYou/issues',
+        helpUrl: FAQ_URL,
       }
   }
 }
