@@ -99,16 +99,6 @@ data class AudioStreamUiState(
     val showMonitoringPanel: Boolean = false
 )
 
-internal fun shouldContinueWifiAutoReconnect(
-    userWantsStreaming: Boolean,
-    hasEstablishedStream: Boolean,
-    mode: ConnectionMode,
-    engineState: StreamState
-): Boolean = userWantsStreaming &&
-    hasEstablishedStream &&
-    mode == ConnectionMode.Wifi &&
-    engineState != StreamState.Streaming
-
 @OptIn(FlowPreview::class)
 class AudioStreamViewModel : ViewModel() {
     private val _audioEngine = AudioEngine()
@@ -130,7 +120,6 @@ class AudioStreamViewModel : ViewModel() {
     // 设备发现
     private val discoveryManager = DeviceDiscoveryManager()
     private val wifiNetworkMonitor = WifiNetworkMonitor()
-    private val reconnectWakeup = Channel<Unit>(Channel.CONFLATED)
     val discoveredDevices: StateFlow<List<DiscoveredDevice>> = discoveryManager.discoveredDevices
     val isDiscovering: StateFlow<Boolean> = discoveryManager.isDiscovering
 
@@ -149,7 +138,6 @@ class AudioStreamViewModel : ViewModel() {
     private var isStopStreamRequestPending = false
     private var userWantsStreaming = false
     private var hasEstablishedStream = false
-    private var autoReconnectJob: Job? = null
 
     private data class ConnectionTarget(
         val ipAddress: String,
@@ -169,15 +157,10 @@ class AudioStreamViewModel : ViewModel() {
         auxiliaryScope.launch {
             wifiNetworkMonitor.networkAvailableEvents.collect {
                 if (closed.get() || _uiState.value.mode != ConnectionMode.Wifi) return@collect
-                Logger.i("AudioStreamViewModel", "Wi-Fi network restored; refreshing discovery")
+                Logger.i("AudioStreamViewModel", "Wi-Fi network restored; refreshing discovery and waking engine reconnect")
                 discoveryManager.stopDiscovery()
                 discoveryManager.startDiscovery()
-                reconnectWakeup.trySend(Unit)
-                if (userWantsStreaming && hasEstablishedStream &&
-                    _audioEngine.currentStreamState() == StreamState.Error
-                ) {
-                    scheduleAutoReconnect()
-                }
+                _audioEngine.wakeupReconnect()
             }
         }
         wifiNetworkMonitor.start()
@@ -196,82 +179,81 @@ class AudioStreamViewModel : ViewModel() {
 
     private fun loadSettings() {
         val savedModeName = settings.getString("connection_mode", ConnectionMode.Wifi.name)
-    val savedMode = when (savedModeName) {
+        val savedMode = when (savedModeName) {
             "WifiUdp" -> ConnectionMode.Wifi
             else -> try { ConnectionMode.valueOf(savedModeName) } catch(e: Exception) { ConnectionMode.Wifi }
         }
         val effectiveMode = savedMode
         val savedProtocolName = settings.getString("transport_protocol", TransportProtocol.Both.name)
         val savedProtocol = try { TransportProtocol.valueOf(savedProtocolName) } catch(e: Exception) { TransportProtocol.Both }
-                val savedIp = settings.getString("ip_address", "192.168.1.5")
+        val savedIp = settings.getString("ip_address", "192.168.1.5")
         val savedBindAddress = settings.getString("bind_address", "0.0.0.0")
         val savedSelectedIp = settings.getString("selected_ip_address", "")
         val savedAutoBindSetting = settings.getBoolean("is_auto_bind_address", false)
         val effectiveIp = savedIp
         val effectiveBindAddress = "0.0.0.0"
         val savedIsAutoBind = false
-    val savedPort = settings.getString("port", Constants.DEFAULT_TCP_PORT.toString())
-    val savedMonitoring = false
+        val savedPort = settings.getString("port", Constants.DEFAULT_TCP_PORT.toString())
+        val savedMonitoring = false
         settings.putBoolean("monitoring_enabled", false)
-    val savedSampleRateName = settings.getString("sample_rate", SampleRate.Rate48000.name)
-    val savedSampleRate = try { SampleRate.valueOf(savedSampleRateName) } catch(e: Exception) { SampleRate.Rate48000 }
-    val savedChannelCountName = settings.getString("channel_count", ChannelCount.Stereo.name)
-    val savedChannelCount = try { ChannelCount.valueOf(savedChannelCountName) } catch(e: Exception) { ChannelCount.Stereo }
-    val savedAudioFormatName = settings.getString("audio_format", AudioFormat.PCM_FLOAT.name)
-    val savedAudioFormat = try { AudioFormat.valueOf(savedAudioFormatName) } catch(e: Exception) { AudioFormat.PCM_FLOAT }
-    val savedNS = settings.getBoolean("enable_ns", false)
-    val savedNSTypeName = settings.getString("ns_type", NoiseReductionType.RNNoise.name)
-    val savedNSType = NoiseReductionType.entries.firstOrNull { it.name == savedNSTypeName }
-        ?: NoiseReductionType.RNNoise
-    val savedAGC = settings.getBoolean("enable_agc", false)
-    val savedAGCTarget = settings.getInt("agc_target", 32000)
-    val savedVAD = settings.getBoolean("enable_vad", false)
-    val savedVADThreshold = settings.getInt("vad_threshold", 10)
-    val savedDereverb = settings.getBoolean("enable_dereverb", false)
-    val savedDereverbLevel = settings.getFloat("dereverb_level", 0.5f)
-    val savedAmplification = settings.getFloat("amplification", 15.0f)
-    val savedNsIntensity = settings.getFloat("ns_intensity", 1.0f)
-    val savedAgcAttackRate = settings.getFloat("agc_attack_rate", 0.01f)
-    val savedAgcDecayRate = settings.getFloat("agc_decay_rate", 0.005f)
-    val savedChainStr = settings.getString("processing_chain", "")
-    var savedChain = if (savedChainStr.isEmpty()) {
-        listOf(
-            AudioEffectType.NoiseReduction,
-            AudioEffectType.Dereverb,
-            AudioEffectType.Equalizer,
-            AudioEffectType.Amplifier,
-            AudioEffectType.AGC,
-            AudioEffectType.VAD
-        )
-    } else {
-        savedChainStr.split(",").mapNotNull { name ->
-            AudioEffectType.entries.find { it.name == name }
-        }.toMutableList().apply {
-            if (!contains(AudioEffectType.Equalizer)) {
-                // Insert Equalizer before Amplifier if it exists, otherwise before AGC/VAD
-                val ampIndex = indexOf(AudioEffectType.Amplifier)
-                if (ampIndex != -1) {
-                    add(ampIndex, AudioEffectType.Equalizer)
-                } else {
-                    val lastSafeIndex = (size - 2).coerceAtLeast(0)
-                    add(lastSafeIndex, AudioEffectType.Equalizer)
+        val savedSampleRateName = settings.getString("sample_rate", SampleRate.Rate48000.name)
+        val savedSampleRate = try { SampleRate.valueOf(savedSampleRateName) } catch(e: Exception) { SampleRate.Rate48000 }
+        val savedChannelCountName = settings.getString("channel_count", ChannelCount.Stereo.name)
+        val savedChannelCount = try { ChannelCount.valueOf(savedChannelCountName) } catch(e: Exception) { ChannelCount.Stereo }
+        val savedAudioFormatName = settings.getString("audio_format", AudioFormat.PCM_FLOAT.name)
+        val savedAudioFormat = try { AudioFormat.valueOf(savedAudioFormatName) } catch(e: Exception) { AudioFormat.PCM_FLOAT }
+        val savedNS = settings.getBoolean("enable_ns", false)
+        val savedNSTypeName = settings.getString("ns_type", NoiseReductionType.RNNoise.name)
+        val savedNSType = NoiseReductionType.entries.firstOrNull { it.name == savedNSTypeName }
+            ?: NoiseReductionType.RNNoise
+        val savedAGC = settings.getBoolean("enable_agc", false)
+        val savedAGCTarget = settings.getInt("agc_target", 32000)
+        val savedVAD = settings.getBoolean("enable_vad", false)
+        val savedVADThreshold = settings.getInt("vad_threshold", 10)
+        val savedDereverb = settings.getBoolean("enable_dereverb", false)
+        val savedDereverbLevel = settings.getFloat("dereverb_level", 0.5f)
+        val savedAmplification = settings.getFloat("amplification", 15.0f)
+        val savedNsIntensity = settings.getFloat("ns_intensity", 1.0f)
+        val savedAgcAttackRate = settings.getFloat("agc_attack_rate", 0.01f)
+        val savedAgcDecayRate = settings.getFloat("agc_decay_rate", 0.005f)
+        val savedChainStr = settings.getString("processing_chain", "")
+        var savedChain = if (savedChainStr.isEmpty()) {
+            listOf(
+                AudioEffectType.NoiseReduction,
+                AudioEffectType.Dereverb,
+                AudioEffectType.Equalizer,
+                AudioEffectType.Amplifier,
+                AudioEffectType.AGC,
+                AudioEffectType.VAD
+            )
+        } else {
+            savedChainStr.split(",").mapNotNull { name ->
+                AudioEffectType.entries.find { it.name == name }
+            }.toMutableList().apply {
+                if (!contains(AudioEffectType.Equalizer)) {
+                    val ampIndex = indexOf(AudioEffectType.Amplifier)
+                    if (ampIndex != -1) {
+                        add(ampIndex, AudioEffectType.Equalizer)
+                    } else {
+                        val lastSafeIndex = (size - 2).coerceAtLeast(0)
+                        add(lastSafeIndex, AudioEffectType.Equalizer)
+                    }
                 }
             }
         }
-    }
 
-    val savedAndroidAudioSourceName = settings.getString("android_audio_source", "Mic")
-    val savedIsAutoConfig = settings.getBoolean("is_auto_config", true)
-    val savedPerformanceMode = settings.getString("performance_mode", "Default")
-    val savedBufferSizeMultiplier = settings.getFloat("buffer_size_multiplier", 1.0f)
-    
-    val savedEqEnabled = settings.getBoolean("equalizer_enabled", false)
-    val savedEqPreAmp = settings.getFloat("equalizer_preamp", 0f)
-    val savedEqGainsStr = settings.getString("equalizer_gains", "")
-    val savedEqGains = if (savedEqGainsStr.isEmpty()) List(10) { 0f } else {
-        savedEqGainsStr.split(",").mapNotNull { it.toFloatOrNull() }.takeIf { it.size == 10 } ?: List(10) { 0f }
-    }
-    val savedEqualizerConfig = EqualizerConfig(savedEqEnabled, savedEqGains, savedEqPreAmp)
+        val savedAndroidAudioSourceName = settings.getString("android_audio_source", "Mic")
+        val savedIsAutoConfig = settings.getBoolean("is_auto_config", true)
+        val performanceMode = settings.getString("performance_mode", "Default")
+        val savedBufferSizeMultiplier = settings.getFloat("buffer_size_multiplier", 1.0f)
+        
+        val savedEqEnabled = settings.getBoolean("equalizer_enabled", false)
+        val savedEqPreAmp = settings.getFloat("equalizer_preamp", 0f)
+        val savedEqGainsStr = settings.getString("equalizer_gains", "")
+        val savedEqGains = if (savedEqGainsStr.isEmpty()) List(10) { 0f } else {
+            savedEqGainsStr.split(",").mapNotNull { it.toFloatOrNull() }.takeIf { it.size == 10 } ?: List(10) { 0f }
+        }
+        val savedEqualizerConfig = EqualizerConfig(savedEqEnabled, savedEqGains, savedEqPreAmp)
 
         _uiState.update {
             it.copy(
@@ -301,12 +283,11 @@ class AudioStreamViewModel : ViewModel() {
                 equalizerConfig = savedEqualizerConfig,
                 androidAudioSourceName = savedAndroidAudioSourceName,
                 isAutoConfig = savedIsAutoConfig,
-                performanceMode = savedPerformanceMode,
+                performanceMode = performanceMode,
                 performanceConfig = PerformanceConfig.withBufferSizeMultiplier(savedBufferSizeMultiplier)
             )
         }
         
-        // Apply auto config on startup if enabled
         if (savedIsAutoConfig) {
             applyAutoConfig()
         }
@@ -318,20 +299,12 @@ class AudioStreamViewModel : ViewModel() {
     private fun setupAudioEngineObservers() {
         auxiliaryScope.launch {
             _audioEngine.streamState.collect { state ->
-                val previousState = _uiState.value.streamState
                 _uiState.update { it.copy(streamState = state) }
                 if (state == StreamState.Streaming) {
                     hasEstablishedStream = true
-                } else if (
-                    state == StreamState.Error &&
-                    previousState == StreamState.Streaming &&
-                    userWantsStreaming &&
-                    _uiState.value.mode == ConnectionMode.Wifi
-                ) {
-                    scheduleAutoReconnect()
                 }
-                // 当停止时清空历史记录
                 if (state == StreamState.Idle) {
+                    hasEstablishedStream = false
                     audioLevelHistory.clear()
                     _levelHistory.value = emptyList()
                     metricsHistory.clear()
@@ -439,8 +412,6 @@ class AudioStreamViewModel : ViewModel() {
         }
 
         userWantsStreaming = true
-        autoReconnectJob?.cancel()
-        autoReconnectJob = null
         isStartStreamRequestPending = true
         auxiliaryScope.launch {
             try {
@@ -578,11 +549,12 @@ class AudioStreamViewModel : ViewModel() {
 
         val state = _uiState.value
         val discoveredPort = device.port.toString()
+        _audioEngine.updateTarget(device.hostAddress, device.port)
         if (state.ipAddress == device.hostAddress && state.port == discoveredPort) return
 
         Logger.i(
             "AudioStreamViewModel",
-            "Using the only discovered Wi-Fi server at ${device.hostAddress}:$discoveredPort"
+            "Using discovered Wi-Fi server at ${device.hostAddress}:$discoveredPort"
         )
         if (state.ipAddress != device.hostAddress) {
             setIp(device.hostAddress)
@@ -592,77 +564,10 @@ class AudioStreamViewModel : ViewModel() {
         }
     }
 
-    private fun scheduleAutoReconnect() {
-        if (
-            !userWantsStreaming ||
-            _uiState.value.mode != ConnectionMode.Wifi ||
-            autoReconnectJob?.isActive == true
-        ) {
-            return
-        }
-
-        autoReconnectJob = auxiliaryScope.launch {
-            var attempt = 0
-            var delayMs = AUTO_RECONNECT_INITIAL_DELAY_MS
-            try {
-                while (shouldContinueWifiAutoReconnect(
-                        userWantsStreaming = userWantsStreaming,
-                        hasEstablishedStream = hasEstablishedStream,
-                        mode = _uiState.value.mode,
-                        engineState = _audioEngine.currentStreamState()
-                    )
-                ) {
-                    // A restored network wakes the backoff immediately. Otherwise keep a
-                    // single bounded-rate retry loop alive until the user stops streaming.
-                    withTimeoutOrNull(delayMs) {
-                        reconnectWakeup.receive()
-                    }
-                    if (!shouldContinueWifiAutoReconnect(
-                            userWantsStreaming = userWantsStreaming,
-                            hasEstablishedStream = hasEstablishedStream,
-                            mode = _uiState.value.mode,
-                            engineState = _audioEngine.currentStreamState()
-                        )
-                    ) {
-                        break
-                    }
-
-                    attempt++
-                    Logger.i(
-                        "AudioStreamViewModel",
-                        "Retrying Wi-Fi stream after connection loss (attempt $attempt)"
-                    )
-                    isStartStreamRequestPending = true
-                    try {
-                        startStreamInternal(automaticRetry = true)
-                    } finally {
-                        isStartStreamRequestPending = false
-                    }
-
-                    val engineState = _audioEngine.currentStreamState()
-                    if (engineState == StreamState.Streaming) return@launch
-                    if (_uiState.value.streamState != engineState) {
-                        Logger.w(
-                            "AudioStreamViewModel",
-                            "Resynchronizing retry state from ${_uiState.value.streamState} to $engineState"
-                        )
-                        _uiState.update { it.copy(streamState = engineState) }
-                    }
-                    delayMs = (delayMs * 2).coerceAtMost(AUTO_RECONNECT_MAX_DELAY_MS)
-                }
-
-            } finally {
-                autoReconnectJob = null
-            }
-        }
-    }
-
     fun stopStream() {
         Logger.i("AudioStreamViewModel", "Stopping stream")
         userWantsStreaming = false
         hasEstablishedStream = false
-        autoReconnectJob?.cancel()
-        autoReconnectJob = null
         if (isStopStreamRequestPending) {
             Logger.d("AudioStreamViewModel", "Stop stream request ignored: stop already pending")
             return
@@ -670,7 +575,7 @@ class AudioStreamViewModel : ViewModel() {
         isStopStreamRequestPending = true
         auxiliaryScope.launch {
             try {
-                _audioEngine.stopAndWait()
+                _audioEngine.stopAndWait(userInitiated = true)
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -954,9 +859,6 @@ class AudioStreamViewModel : ViewModel() {
         closeJob?.let { return@synchronized it }
         closed.set(true)
         userWantsStreaming = false
-        autoReconnectJob?.cancel()
-        autoReconnectJob = null
-        reconnectWakeup.close()
         discoveryManager.stopDiscovery()
         wifiNetworkMonitor.stop()
         val engineCloseJob = _audioEngine.close()
@@ -980,5 +882,4 @@ class AudioStreamViewModel : ViewModel() {
         discoveryManager.stopDiscovery()
         discoveryManager.startDiscovery()
     }
-
 }
