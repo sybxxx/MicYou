@@ -21,6 +21,13 @@ use crate::network::NetworkManager;
 const PROBE_INTERVAL: Duration = Duration::from_secs(5);
 const PROBE_TIMEOUT: Duration = Duration::from_millis(1500);
 const FAILURE_THRESHOLD: u32 = 2;
+// Pause between listener/socket rebuild attempts when the watchdog ordered a
+// rebuild but the port cannot be rebound yet. Shared with the TCP/UDP tasks so
+// both halves of one rebuild stay in lockstep.
+pub const REBIND_RETRY_INTERVAL: Duration = Duration::from_secs(1);
+// How long (per rebuild order) to keep checking whether the rebuilt listeners
+// answer again before giving up on refreshing mDNS for this cycle.
+const RECOVERY_CONFIRM_ATTEMPTS: u32 = 10;
 
 /// Watchdog tuning. Production values come from [`Self::for_bind`]; tests
 /// inject tiny intervals to exercise the failure path quickly.
@@ -65,6 +72,38 @@ pub fn resolve_probe_address(bind_address: &str, port: u16) -> Option<SocketAddr
         bind_address.parse().ok()?
     };
     Some(SocketAddr::new(ip, port))
+}
+
+/// Sleep for `duration`; returns `true` when cancellation won the race.
+pub async fn wait_or_cancel(duration: Duration, cancel_token: &CancellationToken) -> bool {
+    tokio::select! {
+        _ = cancel_token.cancelled() => true,
+        _ = tokio::time::sleep(duration) => false,
+    }
+}
+
+/// Probe briefly after ordering a rebuild; mDNS is only refreshed when the
+/// control listener actually serves again within the confirmation window, so a
+/// persistently dead bind cannot churn the daemon on every watchdog cycle.
+async fn confirm_recovery(
+    probe_target: SocketAddr,
+    probe_timeout: Duration,
+    attempts: u32,
+    retry_interval: Duration,
+    cancel_token: &CancellationToken,
+) -> bool {
+    for _ in 0..attempts {
+        if cancel_token.is_cancelled() {
+            return false;
+        }
+        if probe_listener(probe_target, probe_timeout).await {
+            return true;
+        }
+        if wait_or_cancel(retry_interval, cancel_token).await {
+            return false;
+        }
+    }
+    false
 }
 
 /// Open one throwaway connection to prove the listener still accepts.
@@ -130,7 +169,25 @@ pub async fn run(
                 );
                 let generation = *deps.rebind.borrow();
                 deps.rebind.send_replace(generation.wrapping_add(1));
-                reregister_mdns(&deps).await;
+                // Refresh mDNS only once the rebuilt listeners actually answer
+                // again, so a persistently dead bind cannot churn the daemon on
+                // every watchdog cycle.
+                if confirm_recovery(
+                    config.probe_target,
+                    config.probe_timeout,
+                    RECOVERY_CONFIRM_ATTEMPTS,
+                    REBIND_RETRY_INTERVAL,
+                    &cancel_token,
+                )
+                .await
+                {
+                    reregister_mdns(&deps).await;
+                } else {
+                    log::warn!(
+                        target: "watchdog",
+                        "listener still unreachable after rebuild window; skipping mDNS refresh"
+                    );
+                }
             }
         }
     }
@@ -147,13 +204,26 @@ async fn reregister_mdns(deps: &ListenerWatchdogDeps) {
         return;
     };
     previous.stop_mdns();
-    match NetworkManager::start_mdns(deps.mdns_port, &deps.mdns_bind) {
-        Ok(manager) => {
+    let port = deps.mdns_port;
+    let bind_address = deps.mdns_bind.clone();
+    // start_mdns performs blocking system calls (daemon thread spawn, adapter
+    // enumeration); run them off the async executor. The mutex stays held so a
+    // concurrent stop cannot interleave behind us and resurrect the daemon.
+    // The error is flattened to String because Box<dyn Error> is not Send.
+    match tokio::task::spawn_blocking(move || {
+        NetworkManager::start_mdns(port, &bind_address).map_err(|e| e.to_string())
+    })
+    .await
+    {
+        Ok(Ok(manager)) => {
             log::info!(target: "watchdog", "mDNS service re-registered");
             *mdns = Some(manager);
         }
-        Err(error) => {
+        Ok(Err(error)) => {
             log::warn!(target: "watchdog", "mDNS re-registration failed: {}", error)
+        }
+        Err(join_error) => {
+            log::warn!(target: "watchdog", "mDNS re-registration task failed: {}", join_error)
         }
     }
 }
@@ -191,6 +261,42 @@ mod tests {
 
         drop(listener);
         assert!(!probe_listener(target, Duration::from_secs(1)).await);
+    }
+
+    #[tokio::test]
+    async fn wait_or_cancel_reports_which_side_won() {
+        let cancelled = CancellationToken::new();
+        cancelled.cancel();
+        assert!(wait_or_cancel(Duration::from_secs(60), &cancelled).await);
+
+        let live = CancellationToken::new();
+        assert!(!wait_or_cancel(Duration::from_millis(10), &live).await);
+    }
+
+    #[tokio::test]
+    async fn recovery_confirmation_requires_a_serving_listener() {
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let target = listener.local_addr().unwrap();
+        assert!(confirm_recovery(
+            target,
+            Duration::from_millis(200),
+            3,
+            Duration::from_millis(10),
+            &CancellationToken::new()
+        )
+        .await);
+
+        drop(listener);
+        assert!(!confirm_recovery(
+            target,
+            Duration::from_millis(50),
+            3,
+            Duration::from_millis(10),
+            &CancellationToken::new()
+        )
+        .await);
     }
 
     #[tokio::test]

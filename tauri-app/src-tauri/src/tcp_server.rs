@@ -17,6 +17,7 @@ use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 
 use crate::audio_stream::{validate_audio_packet, AudioStreamEvent, ExpectedAudioSession};
+use crate::listener_watchdog::{wait_or_cancel, REBIND_RETRY_INTERVAL};
 use crate::udp_server::{
     try_accept_audio_packet, ActiveAudioSession, AudioPacketAcceptance, SharedActiveAudioSession,
 };
@@ -32,9 +33,6 @@ const FRAME_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 const CLIENT_SHUTDOWN_GRACE_PERIOD: Duration = Duration::from_millis(250);
 const AUDIO_STALL_TIMEOUT: Duration = Duration::from_secs(10);
 const AUDIO_HEALTH_TIMEOUT: Duration = Duration::from_secs(3);
-// Pause between listener rebuild attempts when the watchdog ordered a rebuild
-// but the port cannot be rebound yet.
-const REBIND_RETRY_INTERVAL: Duration = Duration::from_secs(1);
 static NEXT_CONNECTION_ID: AtomicU64 = AtomicU64::new(1);
 
 #[cfg(windows)]
@@ -124,9 +122,8 @@ pub async fn start_tcp_server(
                         "TCP control listener rebuild failed: {}; retrying",
                         error
                     );
-                    tokio::select! {
-                        _ = cancel_token.cancelled() => break 'generations,
-                        _ = tokio::time::sleep(REBIND_RETRY_INTERVAL) => {}
+                    if wait_or_cancel(REBIND_RETRY_INTERVAL, &cancel_token).await {
+                        break 'generations;
                     }
                 }
             }
@@ -171,7 +168,11 @@ pub async fn start_tcp_server(
                                     continue;
                                 }
                             };
-                            let is_health_probe = probe_ip == Some(addr.ip());
+                            // USB mode clients arrive via `adb reverse` from
+                            // 127.0.0.1 - the same address the watchdog probes
+                            // from - so only wifi-mode probes are silenced.
+                            let is_health_probe =
+                                mode != "usb" && probe_ip == Some(addr.ip());
                             if !is_health_probe {
                                 println!("New client connected: {}", addr);
                             }

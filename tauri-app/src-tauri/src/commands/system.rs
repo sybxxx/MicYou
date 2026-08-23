@@ -863,8 +863,17 @@ pub async fn start_server_inner(
         mdns_port: port,
         mdns_bind: bind_addr.clone(),
     };
+    // Escape hatch: server.json "listenerWatchdog": false skips probing and
+    // socket rebuilds. run(None, ..) parks holding the rebind sender so the
+    // TCP/UDP receivers never see a closed channel.
+    let watchdog_config = if crate::app_config::load_server_prefs().listener_watchdog {
+        crate::listener_watchdog::ListenerWatchdogConfig::for_bind(&bind_addr, port)
+    } else {
+        log::info!(target: "server", "Listener watchdog disabled by server.json");
+        None
+    };
     let watchdog_task = tokio::spawn(crate::listener_watchdog::run(
-        crate::listener_watchdog::ListenerWatchdogConfig::for_bind(&bind_addr, port),
+        watchdog_config,
         watchdog_deps,
         cancel_token.clone(),
     ));

@@ -142,6 +142,10 @@ pub struct ServerPrefs {
     pub auto_bind: bool,
     /// Selected output audio device name.
     pub output_device: String,
+    /// Escape hatch for the listener self-heal watchdog (loopback probe plus
+    /// socket rebuild after sleep/resume). Note: saving connection settings
+    /// from the GUI (which does not send this key) resets it to true.
+    pub listener_watchdog: bool,
 }
 
 impl Default for ServerPrefs {
@@ -153,6 +157,7 @@ impl Default for ServerPrefs {
             bind_address: "0.0.0.0".to_string(),
             auto_bind: true,
             output_device: String::new(),
+            listener_watchdog: true,
         }
     }
 }

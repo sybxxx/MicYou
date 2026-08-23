@@ -6,20 +6,17 @@ use prost::Message;
 use std::error::Error;
 use std::net::IpAddr;
 use std::sync::{Arc, RwLock};
-use std::time::Duration;
 use tokio::sync::mpsc::Sender;
 use tokio_util::sync::CancellationToken;
 
 use crate::audio_stream::{can_bind_legacy_packet, validate_audio_packet, AudioStreamEvent};
+use crate::listener_watchdog::{wait_or_cancel, REBIND_RETRY_INTERVAL};
 use micyou_protocol::micyou::AudioPacketMessageOrdered;
 
 const UDP_HEADER_LEN: usize = 8;
 // A protobuf wrapper around Android's <=1,400-byte PCM/FEC chunks. Keep datagrams
 // below the UDP protocol maximum; nested audio buffers are validated separately.
 pub const MAX_AUDIO_PAYLOAD_LEN: usize = 64 * 1024;
-// Pause between socket rebuild attempts when the watchdog ordered a rebuild
-// but the port cannot be rebound yet.
-const REBIND_RETRY_INTERVAL: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ActiveAudioSession {
@@ -131,9 +128,8 @@ async fn rebuild_udp_socket(
                     "UDP audio socket rebuild failed: {}; retrying",
                     error
                 );
-                tokio::select! {
-                    _ = cancel_token.cancelled() => return None,
-                    _ = tokio::time::sleep(REBIND_RETRY_INTERVAL) => {}
+                if wait_or_cancel(REBIND_RETRY_INTERVAL, cancel_token).await {
+                    return None;
                 }
             }
         }
