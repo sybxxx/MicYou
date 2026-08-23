@@ -32,6 +32,9 @@ const FRAME_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 const CLIENT_SHUTDOWN_GRACE_PERIOD: Duration = Duration::from_millis(250);
 const AUDIO_STALL_TIMEOUT: Duration = Duration::from_secs(10);
 const AUDIO_HEALTH_TIMEOUT: Duration = Duration::from_secs(3);
+// Pause between listener rebuild attempts when the watchdog ordered a rebuild
+// but the port cannot be rebound yet.
+const REBIND_RETRY_INTERVAL: Duration = Duration::from_secs(1);
 static NEXT_CONNECTION_ID: AtomicU64 = AtomicU64::new(1);
 
 #[cfg(windows)]
@@ -95,77 +98,116 @@ pub async fn start_tcp_server(
     active_connection: SharedActiveConnection,
     takeover_lock: SharedTakeoverLock,
     active_audio_session: SharedActiveAudioSession,
+    mut rebind_requests: tokio::sync::watch::Receiver<u64>,
     ready: tokio::sync::oneshot::Sender<Result<(), String>>,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
-    let listener = match TcpListener::bind(format!("{}:{}", bind_address, port)).await {
-        Ok(listener) => listener,
-        Err(error) => {
-            let _ = ready.send(Err(error.to_string()));
-            return Err(Box::new(error));
-        }
-    };
-    let _ = ready.send(Ok(()));
-    println!("TCP Control Server listening on {}:{}", bind_address, port);
-
     let mut clients = JoinSet::new();
     let client_slots = Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_CLIENTS));
-    loop {
-        tokio::select! {
-            _ = cancel_token.cancelled() => {
-                println!("TCP Server cancelled");
-                break;
-            }
-            Some(result) = clients.join_next(), if !clients.is_empty() => {
-                if let Err(e) = result {
-                    eprintln!("TCP client task failed: {}", e);
+    let bind_target = format!("{}:{}", bind_address, port);
+    // Watchdog probes connect from the machine itself; their source IP matches
+    // the probe target and is excluded from the per-connection console noise.
+    let probe_ip = crate::listener_watchdog::resolve_probe_address(&bind_address, port)
+        .map(|addr| addr.ip());
+    let mut ready = Some(ready);
+
+    'generations: loop {
+        let listener = loop {
+            match TcpListener::bind(&bind_target).await {
+                Ok(listener) => break listener,
+                Err(error) => {
+                    if let Some(ready_tx) = ready.take() {
+                        let _ = ready_tx.send(Err(error.to_string()));
+                        return Err(Box::new(error));
+                    }
+                    log::warn!(
+                        target: "server",
+                        "TCP control listener rebuild failed: {}; retrying",
+                        error
+                    );
+                    tokio::select! {
+                        _ = cancel_token.cancelled() => break 'generations,
+                        _ = tokio::time::sleep(REBIND_RETRY_INTERVAL) => {}
+                    }
                 }
             }
-            accept_result = listener.accept() => {
-                match accept_result {
-                    Ok((socket, addr)) => {
-                        // Control frames (ping/pong) are ~60 bytes; without
-                        // TCP_NODELAY, Nagle aggregation adds up to ~40ms of
-                        // jitter to the RTT reading. On USB mode the real
-                        // latency is a few ms, so this jitter is very visible.
-                        if let Err(e) = socket.set_nodelay(true) {
-                            log::warn!("Failed to set TCP_NODELAY on client socket: {}", e);
-                        }
-                        let permit = match client_slots.clone().try_acquire_owned() {
-                            Ok(permit) => permit,
-                            Err(_) => {
-                                log::warn!("TCP client limit reached; rejecting {}", addr);
-                                continue;
-                            }
-                        };
-                        println!("New client connected: {}", addr);
-                        let events = events.clone();
-                        let audio_tx = audio_tx.clone();
-                        let stats = stats.clone();
-                        let mode = mode.clone();
-                        let active_connection = active_connection.clone();
-                        let takeover_lock = takeover_lock.clone();
-                        let active_audio_session = active_audio_session.clone();
-                        let client_cancel = cancel_token.clone();
-                        clients.spawn(async move {
-                            let _permit = permit;
-                            if let Err(e) = handle_client(
-                                socket,
-                                addr,
-                                events,
-                                audio_tx,
-                                stats,
-                                mode,
-                                active_connection,
-                                takeover_lock,
-                                active_audio_session,
-                                client_cancel,
-                            ).await {
-                                eprintln!("Client {} error: {}", addr, e);
-                            }
-                            println!("Client {} disconnected", addr);
-                        });
+        };
+        if let Some(ready_tx) = ready.take() {
+            let _ = ready_tx.send(Ok(()));
+        }
+        println!("TCP Control Server listening on {}:{}", bind_address, port);
+
+        loop {
+            tokio::select! {
+                _ = cancel_token.cancelled() => {
+                    println!("TCP Server cancelled");
+                    break 'generations;
+                }
+                Some(result) = clients.join_next(), if !clients.is_empty() => {
+                    if let Err(e) = result {
+                        eprintln!("TCP client task failed: {}", e);
                     }
-                    Err(e) => eprintln!("Failed to accept TCP connection: {}", e),
+                }
+                _ = rebind_requests.changed() => {
+                    // The watchdog detected the OS-level listener is gone (for
+                    // example after a sleep/resume cycle). Dropping this socket
+                    // makes the outer loop recreate it.
+                    log::warn!(target: "server", "Rebuilding TCP control listener");
+                    break;
+                }
+                accept_result = listener.accept() => {
+                    match accept_result {
+                        Ok((socket, addr)) => {
+                            // Control frames (ping/pong) are ~60 bytes; without
+                            // TCP_NODELAY, Nagle aggregation adds up to ~40ms of
+                            // jitter to the RTT reading. On USB mode the real
+                            // latency is a few ms, so this jitter is very visible.
+                            if let Err(e) = socket.set_nodelay(true) {
+                                log::warn!("Failed to set TCP_NODELAY on client socket: {}", e);
+                            }
+                            let permit = match client_slots.clone().try_acquire_owned() {
+                                Ok(permit) => permit,
+                                Err(_) => {
+                                    log::warn!("TCP client limit reached; rejecting {}", addr);
+                                    continue;
+                                }
+                            };
+                            let is_health_probe = probe_ip == Some(addr.ip());
+                            if !is_health_probe {
+                                println!("New client connected: {}", addr);
+                            }
+                            let events = events.clone();
+                            let audio_tx = audio_tx.clone();
+                            let stats = stats.clone();
+                            let mode = mode.clone();
+                            let active_connection = active_connection.clone();
+                            let takeover_lock = takeover_lock.clone();
+                            let active_audio_session = active_audio_session.clone();
+                            let client_cancel = cancel_token.clone();
+                            clients.spawn(async move {
+                                let _permit = permit;
+                                if let Err(e) = handle_client(
+                                    socket,
+                                    addr,
+                                    events,
+                                    audio_tx,
+                                    stats,
+                                    mode,
+                                    active_connection,
+                                    takeover_lock,
+                                    active_audio_session,
+                                    client_cancel,
+                                ).await {
+                                    if !is_health_probe {
+                                        eprintln!("Client {} error: {}", addr, e);
+                                    }
+                                }
+                                if !is_health_probe {
+                                    println!("Client {} disconnected", addr);
+                                }
+                            });
+                        }
+                        Err(e) => eprintln!("Failed to accept TCP connection: {}", e),
+                    }
                 }
             }
         }
@@ -831,6 +873,74 @@ async fn handle_message(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct NoopEvents;
+
+    impl crate::events::ServerEvents for NoopEvents {
+        fn device_connected(&self, _info: DeviceInfo) {}
+        fn device_disconnected(&self) {}
+        fn audio_metrics(&self, _metrics: crate::stats::AudioMetrics) {}
+        fn udp_audio_warning(&self) {}
+        fn mute_state_changed(&self, _is_muted: bool) {}
+        fn audio_level(&self, _level: u32) {}
+        fn audio_spectrum(&self, _raw: Vec<f32>, _processed: Vec<f32>) {}
+        fn server_stopped(&self) {}
+        fn server_fault(&self, _component: String, _message: String) {}
+        fn web_client_count(&self, _count: u32) {}
+        fn install_progress(&self, _message: String) {}
+        fn aec_status_changed(&self, _status: crate::events::AecStatus) {}
+    }
+
+    #[tokio::test]
+    async fn tcp_listener_is_rebuilt_after_a_rebind_request() {
+        let port = {
+            let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            probe.local_addr().unwrap().port()
+        };
+        let events: crate::events::SharedEvents = Arc::new(NoopEvents);
+        let cancel = CancellationToken::new();
+        let (audio_tx, _audio_rx) = tokio::sync::mpsc::channel::<AudioStreamEvent>(8);
+        let (rebind_tx, rebind_rx) = tokio::sync::watch::channel(0u64);
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+
+        let server = tokio::spawn(start_tcp_server(
+            events,
+            port,
+            "127.0.0.1".to_string(),
+            cancel.clone(),
+            audio_tx,
+            Arc::new(crate::stats::NetworkStats::default()),
+            "wifi".to_string(),
+            Arc::new(Mutex::new(None)),
+            Arc::new(Mutex::new(())),
+            Arc::new(std::sync::RwLock::new(ActiveAudioSession::default())),
+            rebind_rx,
+            ready_tx,
+        ));
+
+        tokio::time::timeout(std::time::Duration::from_secs(2), ready_rx)
+            .await
+            .unwrap()
+            .expect("startup channel stayed open")
+            .expect("startup succeeded");
+
+        let first = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        drop(first);
+
+        rebind_tx.send(1).unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert!(!server.is_finished(), "server exited while rebuilding");
+
+        let second = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        drop(second);
+
+        cancel.cancel();
+        tokio::time::timeout(std::time::Duration::from_secs(2), server)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+    }
 
     fn header(payload_len: i32) -> [u8; FRAME_HEADER_LEN] {
         let mut header = [0; FRAME_HEADER_LEN];

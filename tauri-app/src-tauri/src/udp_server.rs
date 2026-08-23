@@ -6,6 +6,7 @@ use prost::Message;
 use std::error::Error;
 use std::net::IpAddr;
 use std::sync::{Arc, RwLock};
+use std::time::Duration;
 use tokio::sync::mpsc::Sender;
 use tokio_util::sync::CancellationToken;
 
@@ -16,6 +17,9 @@ const UDP_HEADER_LEN: usize = 8;
 // A protobuf wrapper around Android's <=1,400-byte PCM/FEC chunks. Keep datagrams
 // below the UDP protocol maximum; nested audio buffers are validated separately.
 pub const MAX_AUDIO_PAYLOAD_LEN: usize = 64 * 1024;
+// Pause between socket rebuild attempts when the watchdog ordered a rebuild
+// but the port cannot be rebound yet.
+const REBIND_RETRY_INTERVAL: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ActiveAudioSession {
@@ -98,6 +102,44 @@ pub fn try_accept_audio_packet(
     }
 }
 
+fn build_udp_socket(bind_target: std::net::SocketAddr) -> std::io::Result<UdpSocket> {
+    let socket2 = socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::DGRAM, None)?;
+    if let Err(e) = socket2.set_recv_buffer_size(2 * 1024 * 1024) {
+        eprintln!(
+            "Warning: Failed to set UDP receive buffer size to 2MB: {}",
+            e
+        );
+    }
+    socket2.bind(&bind_target.into())?;
+    socket2.set_nonblocking(true)?;
+    let std_socket: std::net::UdpSocket = socket2.into();
+    Ok(UdpSocket::from_std(std_socket)?)
+}
+
+/// Recreate the audio socket after the watchdog ordered a rebuild. Keeps
+/// retrying until it succeeds or the server is cancelled.
+async fn rebuild_udp_socket(
+    bind_target: std::net::SocketAddr,
+    cancel_token: &CancellationToken,
+) -> Option<UdpSocket> {
+    loop {
+        match build_udp_socket(bind_target) {
+            Ok(socket) => return Some(socket),
+            Err(error) => {
+                log::warn!(
+                    target: "server",
+                    "UDP audio socket rebuild failed: {}; retrying",
+                    error
+                );
+                tokio::select! {
+                    _ = cancel_token.cancelled() => return None,
+                    _ = tokio::time::sleep(REBIND_RETRY_INTERVAL) => {}
+                }
+            }
+        }
+    }
+}
+
 pub async fn start_udp_server(
     tx: Sender<AudioStreamEvent>,
     port: u16,
@@ -105,27 +147,21 @@ pub async fn start_udp_server(
     cancel_token: CancellationToken,
     stats: std::sync::Arc<crate::stats::NetworkStats>,
     active_audio_session: SharedActiveAudioSession,
+    mut rebind_requests: tokio::sync::watch::Receiver<u64>,
     ready: tokio::sync::oneshot::Sender<Result<(), String>>,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
-    let result = (|| -> Result<tokio::net::UdpSocket, Box<dyn Error + Send + Sync>> {
-        let addr: std::net::SocketAddr = format!("{}:{}", bind_address, port).parse()?;
-        let socket2 = socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::DGRAM, None)?;
-        if let Err(e) = socket2.set_recv_buffer_size(2 * 1024 * 1024) {
-            eprintln!(
-                "Warning: Failed to set UDP receive buffer size to 2MB: {}",
-                e
-            );
+    let bind_target: std::net::SocketAddr = match format!("{}:{}", bind_address, port).parse() {
+        Ok(addr) => addr,
+        Err(error) => {
+            let _ = ready.send(Err(error.to_string()));
+            return Err(Box::new(error));
         }
-        socket2.bind(&addr.into())?;
-        socket2.set_nonblocking(true)?;
-        let std_socket: std::net::UdpSocket = socket2.into();
-        Ok(UdpSocket::from_std(std_socket)?)
-    })();
-    let socket = match result {
+    };
+    let mut socket = match build_udp_socket(bind_target) {
         Ok(socket) => socket,
         Err(error) => {
             let _ = ready.send(Err(error.to_string()));
-            return Err(error);
+            return Err(Box::new(error));
         }
     };
     let _ = ready.send(Ok(()));
@@ -144,6 +180,17 @@ pub async fn start_udp_server(
             _ = cancel_token.cancelled() => {
                 println!("UDP Server cancelled");
                 break;
+            }
+            _ = rebind_requests.changed() => {
+                // The TCP watchdog detected dead listeners (e.g. after a
+                // sleep/resume cycle); the UDP socket died with them.
+                log::warn!(target: "server", "Rebuilding UDP audio socket");
+                drop(socket);
+                let Some(rebuilt) = rebuild_udp_socket(bind_target, &cancel_token).await else {
+                    break;
+                };
+                socket = rebuilt;
+                println!("UDP Audio Server listening on {}", port);
             }
             recv_result = socket.recv_from(&mut buf) => {
                 let (len, addr) = match recv_result {
@@ -223,6 +270,112 @@ pub async fn start_udp_server(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn udp_socket_is_rebuilt_after_a_rebind_request_and_keeps_receiving() {
+        use micyou_protocol::micyou::AudioPacketMessage;
+        use prost::Message as _;
+
+        let port = {
+            let probe = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+            probe.local_addr().unwrap().port()
+        };
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<AudioStreamEvent>(8);
+        let (rebind_tx, rebind_rx) = tokio::sync::watch::channel(0u64);
+        let cancel = CancellationToken::new();
+        let active_audio_session: SharedActiveAudioSession = Arc::new(RwLock::new(
+            ActiveAudioSession::UnboundLegacy {
+                peer_ip: "127.0.0.1".parse().unwrap(),
+                epoch: 5,
+            },
+        ));
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+
+        let server = tokio::spawn(start_udp_server(
+            tx,
+            port,
+            "127.0.0.1".to_string(),
+            cancel.clone(),
+            Arc::new(crate::stats::NetworkStats::default()),
+            active_audio_session,
+            rebind_rx,
+            ready_tx,
+        ));
+        tokio::time::timeout(std::time::Duration::from_secs(2), ready_rx)
+            .await
+            .unwrap()
+            .expect("startup channel stayed open")
+            .expect("startup succeeded");
+
+        let datagram = |sequence_number: i32| {
+            let wrapper = MessageWrapper {
+                audio_packet: Some(AudioPacketMessageOrdered {
+                    sequence_number,
+                    audio_packet: Some(AudioPacketMessage {
+                        buffer: vec![0; 4],
+                        sample_rate: 48_000,
+                        channel_count: 1,
+                        audio_format: 2,
+                    }),
+                    timestamp: 0,
+                    fec_buffer: Vec::new(),
+                    fec_sequence_number: -1,
+                    session_id: 202,
+                    fec_packet_lengths: Vec::new(),
+                }),
+                ..Default::default()
+            };
+            let payload = wrapper.encode_to_vec();
+            let mut bytes = Vec::with_capacity(UDP_HEADER_LEN + payload.len());
+            bytes.extend_from_slice(&UDP_PACKET_MAGIC.to_be_bytes());
+            bytes.extend_from_slice(&(payload.len() as i32).to_be_bytes());
+            bytes.extend_from_slice(&payload);
+            bytes
+        };
+        let sender = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        sender
+            .send_to(&datagram(0), ("127.0.0.1", port))
+            .unwrap();
+        match tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv()).await {
+            Ok(Some(AudioStreamEvent::Packet { packet, epoch })) => {
+                assert_eq!(packet.sequence_number, 0);
+                assert_eq!(epoch, 5);
+            }
+            _ => panic!("expected an accepted audio packet before the rebuild"),
+        }
+
+        rebind_tx.send(1).unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert!(!server.is_finished(), "server exited during rebuild");
+
+        // A datagram sent while the socket swap is still in flight can be lost,
+        // so retry until one lands on the rebuilt socket.
+        let mut delivered_after_rebuild = false;
+        for _ in 0..10 {
+            sender
+                .send_to(&datagram(1), ("127.0.0.1", port))
+                .unwrap();
+            match tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv()).await {
+                Ok(Some(AudioStreamEvent::Packet { packet, .. })) => {
+                    assert_eq!(packet.sequence_number, 1);
+                    delivered_after_rebuild = true;
+                    break;
+                }
+                _ => continue,
+            }
+        }
+        assert!(
+            delivered_after_rebuild,
+            "audio packets must flow again after the rebuild"
+        );
+
+        cancel.cancel();
+        tokio::time::timeout(std::time::Duration::from_secs(2), server)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+    }
 
     fn datagram(payload_len: i32, actual_payload: usize) -> Vec<u8> {
         let mut bytes = Vec::with_capacity(UDP_HEADER_LEN + actual_payload);

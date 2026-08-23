@@ -7,6 +7,7 @@ pub mod blackhole;
 pub mod commands;
 pub mod events;
 pub mod jitter_buffer;
+pub mod listener_watchdog;
 pub mod mode_lock;
 pub mod network;
 #[cfg(target_os = "linux")]

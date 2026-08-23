@@ -1,4 +1,5 @@
 use serde::Serialize;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 use std::process::Command;
 use tauri::window::Effect;
 use tauri::{AppHandle, Manager, State};
@@ -777,6 +778,13 @@ pub async fn start_server_inner(
         });
     }
 
+    // Self-healing: sleep/resume cycles can invalidate the bound listeners
+    // while the process stays alive, making every phone connect attempt get
+    // refused. The watchdog probes the control port locally and orders the
+    // network tasks below to rebuild their sockets when it stops answering.
+    let (rebind_tx, tcp_rebind_rx) = tokio::sync::watch::channel(0u64);
+    let udp_rebind_rx = tcp_rebind_rx.clone();
+
     let events_tcp = events.clone();
     let token_tcp = cancel_token.clone();
     let port_tcp = port;
@@ -801,6 +809,7 @@ pub async fn start_server_inner(
             active_connection_tcp,
             takeover_lock_tcp,
             active_audio_session_tcp,
+            tcp_rebind_rx,
             tcp_ready_tx,
         )
         .await
@@ -825,6 +834,7 @@ pub async fn start_server_inner(
             token_udp,
             stats_udp,
             active_audio_session_udp,
+            udp_rebind_rx,
             udp_ready_tx,
         )
         .await
@@ -846,11 +856,23 @@ pub async fn start_server_inner(
             Err(cleanup) => format!("{}; {}", error, cleanup),
         });
     }
+
+    let watchdog_deps = crate::listener_watchdog::ListenerWatchdogDeps {
+        rebind: rebind_tx,
+        mdns: state.mdns_manager.clone(),
+        mdns_port: port,
+        mdns_bind: bind_addr.clone(),
+    };
+    let watchdog_task = tokio::spawn(crate::listener_watchdog::run(
+        crate::listener_watchdog::ListenerWatchdogConfig::for_bind(&bind_addr, port),
+        watchdog_deps,
+        cancel_token.clone(),
+    ));
     state
         .background_tasks
         .lock()
         .await
-        .extend([tcp_task, udp_task]);
+        .extend([tcp_task, udp_task, watchdog_task]);
     state.lifecycle.lock().await.mark_running();
 
     Ok(format!("Server started on port {}", port))
@@ -976,9 +998,8 @@ pub fn set_window_effects(app: AppHandle, enabled: bool) -> Result<(), String> {
 #[cfg(windows)]
 #[tauri::command]
 pub async fn start_window_drag(app: AppHandle) -> Result<(), String> {
-    use std::ffi::CString;
     use winapi::um::winuser::{
-        FindWindowA, GetAsyncKeyState, GetCursorPos, SetWindowPos, SWP_NOACTIVATE, SWP_NOSIZE,
+        GetAsyncKeyState, GetCursorPos, SetWindowPos, SWP_NOACTIVATE, SWP_NOSIZE,
         SWP_NOZORDER, VK_LBUTTON,
     };
 
