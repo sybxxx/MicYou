@@ -56,6 +56,11 @@ npm run preview
 npm run tauri dev
 npm run tauri build    # runs sync-version + npm run build first (beforeBuildCommand)
 
+# Windows release installer — Inno Setup, what CI actually ships (NOT the NSIS bundle)
+# 1. produce exe: npx @tauri-apps/cli build --no-bundle   (then copy target/release/micyou-app.exe to src-tauri/target/release/MicYou.exe)
+# 2. iscc /DMyAppVersion="<project.version>" src-tauri/installer.iss
+#    output: tauri-app/src-tauri/target/release/bundle/inno/MicYou_<ver>_x64-setup.exe
+
 # Alternate frontends (Rust workspace, from tauri-app/)
 cargo run -p micyou-cli -- serve        # CLI server (binary: micyou)
 micyou settings get/set, chain list/set # CLI subcommands (clap)
@@ -93,6 +98,7 @@ There are **no** lint, format, or test scripts anywhere (no eslint/prettier/ktli
 | `tauri-app/package.json` | npm scripts (dev/build/tauri/sync-version); version synced from gradle.properties |
 | `tauri-app/sync-version.js` | Version propagation script (also `beforeBuildCommand`) |
 | `tauri-app/src-tauri/tauri.conf.json` | Tauri app config (window, bundle targets, beforeBuildCommand) |
+| `tauri-app/src-tauri/installer.iss` | Inno Setup installer script — the packaging CI actually ships on Windows; installs exe + `resources/*`, detects WebView2, closes a running app. NSIS output from `tauri build` is local-only |
 | `tauri-app/src-tauri/src/lib.rs` | Backend entry; module list + ~40 commands in `invoke_handler` |
 | `tauri-app/src-tauri/src/commands/system.rs` | `start_server`/`start_server_inner` — shared server lifecycle |
 | `tauri-app/src-tauri/src/app_config.rs` | Shared config load/save (`settings.json`, `server.json`, `ui.json`, `theme.json`) |
@@ -108,7 +114,7 @@ There are **no** lint, format, or test scripts anywhere (no eslint/prettier/ktli
 - **Desktop**: Node 22 + npm (package-lock.json committed; CI uses `npm ci --include=dev`); Rust stable (edition 2021) via cargo; Tauri CLI 2 (`npx @tauri-apps/cli`); Vite dev server fixed at port 1420 with `TAURI_DEV_HOST` for HMR.
 - **Release signing**: all four of `ANDROID_KEYSTORE_PATH`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD` required, else release builds are unsigned. CI uses `ANDROID_KEYSTORE_BASE64`.
 - **VS Code**: extensions.json recommends Volar, tauri-vscode, rust-analyzer. `.prettierrc` exists (2-space, singleQuote, printWidth 100) but no formatter is wired into scripts.
-- **Known oddities**: `gradle.properties` and `gradle/wrapper/gradle-wrapper.properties` are gitignored but required by CI; `composeApp/micyou.conf` is a gitignored leftover with zero code references; `docs/FAQ*.md` are redirect stubs (content lives at micyou.top).
+- **Known oddities**: `gradle.properties` and `gradle/wrapper/gradle-wrapper.properties` are gitignored but required by CI; `composeApp/micyou.conf` is a gitignored leftover with zero code references; `docs/FAQ*.md` are redirect stubs (content lives at micyou.top); local `tauri build` NSIS installers are dev-only artifacts — releases and user installs come from `installer.iss` (Inno Setup).
 
 ## Testing & QA
 
