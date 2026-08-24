@@ -4,6 +4,8 @@ import android.content.Context
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.net.wifi.WifiManager
+import android.os.Build
+import androidx.core.content.ContextCompat
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -37,6 +39,7 @@ class DeviceDiscoveryManager constructor() {
     private var discoveryGeneration = 0L
     private var discoveryActive = false
     private var multicastLock: WifiManager.MulticastLock? = null
+    private var lanRouteHeld = false
     private val pendingResolution: MutableSet<String> = Collections.synchronizedSet(mutableSetOf<String>())
 
     fun startDiscovery() {
@@ -52,6 +55,9 @@ class DeviceDiscoveryManager constructor() {
             return
         }
         acquireMulticastLock(context)
+        // Keep discovery traffic on the LAN even when a VPN owns the default route.
+        val lanNetwork = LanRouteBinder.acquire()
+        lanRouteHeld = true
 
         val generation = ++discoveryGeneration
         discoveryListener = object : NsdManager.DiscoveryListener {
@@ -120,6 +126,7 @@ class DeviceDiscoveryManager constructor() {
                 discoveryActive = false
                 _isDiscovering.value = false
                 releaseMulticastLock()
+                releaseLanRoute()
             }
 
             override fun onStopDiscoveryFailed(serviceType: String, errorCode: Int) {
@@ -134,12 +141,25 @@ class DeviceDiscoveryManager constructor() {
         _isDiscovering.value = true
 
         try {
-            nsdManager?.discoverServices("_micyou._tcp.", NsdManager.PROTOCOL_DNS_SD, discoveryListener)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE && lanNetwork != null) {
+                // Without an explicit network the NSD daemon sends its queries over the
+                // default route, which vanishes into the VPN tunnel when one is active.
+                nsdManager?.discoverServices(
+                    "_micyou._tcp.",
+                    NsdManager.PROTOCOL_DNS_SD,
+                    lanNetwork,
+                    ContextCompat.getMainExecutor(context),
+                    discoveryListener!!
+                )
+            } else {
+                nsdManager?.discoverServices("_micyou._tcp.", NsdManager.PROTOCOL_DNS_SD, discoveryListener)
+            }
         } catch (e: Exception) {
             Logger.e("DeviceDiscovery", "Failed to start discovery", e)
             discoveryActive = false
             _isDiscovering.value = false
             releaseMulticastLock()
+            releaseLanRoute()
         }
     }
 
@@ -157,7 +177,14 @@ class DeviceDiscoveryManager constructor() {
         _isDiscovering.value = false
         pendingResolution.clear()
         releaseMulticastLock()
+        releaseLanRoute()
         // Don't clear device list here — let restartDiscovery() manage it
+    }
+
+    private fun releaseLanRoute() {
+        if (!lanRouteHeld) return
+        lanRouteHeld = false
+        LanRouteBinder.release()
     }
 
     private fun acquireMulticastLock(context: Context) {

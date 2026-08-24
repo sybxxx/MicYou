@@ -30,6 +30,7 @@ import com.lanrhyme.micyou.network.ConnectionErrorDetails
 import com.lanrhyme.micyou.network.ConnectionErrorHelper
 import com.lanrhyme.micyou.network.DeviceDiscoveryManager
 import com.lanrhyme.micyou.network.DiscoveredDevice
+import com.lanrhyme.micyou.network.LanRouteBinder
 import com.lanrhyme.micyou.network.selectSingleDiscoveredDevice
 import com.lanrhyme.micyou.network.WifiNetworkMonitor
 import com.lanrhyme.micyou.settings.Settings
@@ -138,6 +139,7 @@ class AudioStreamViewModel : ViewModel() {
     private var isStopStreamRequestPending = false
     private var userWantsStreaming = false
     private var hasEstablishedStream = false
+    private var lanRouteHeldForStream = false
 
     private data class ConnectionTarget(
         val ipAddress: String,
@@ -457,15 +459,23 @@ class AudioStreamViewModel : ViewModel() {
 
         updateAudioEngineConfig()
 
+        // Pin the stream's sockets to the LAN so an active VPN tunnel cannot swallow them.
+        if (mode == ConnectionMode.Wifi && !lanRouteHeldForStream) {
+            LanRouteBinder.acquire()
+            lanRouteHeldForStream = true
+        }
+
         try {
             Logger.d("AudioStreamViewModel", "Calling _audioEngine.start()")
             _audioEngine.start(ip, port, mode, true, sampleRate, channelCount, audioFormat, _uiState.value.transportProtocol)
             Logger.i("AudioStreamViewModel", "Stream started successfully")
         } catch (e: kotlinx.coroutines.CancellationException) {
             Logger.i("AudioStreamViewModel", "Stream start cancelled by user")
+            releaseLanRouteForStream()
             return
         } catch (e: Exception) {
             Logger.e("AudioStreamViewModel", "Failed to start stream", e)
+            releaseLanRouteForStream()
 
             val errorType = ConnectionErrorHelper.analyzeError(e, mode)
             val savedLanguageName = settings.getString("language", AppLanguage.System.name)
@@ -582,8 +592,15 @@ class AudioStreamViewModel : ViewModel() {
                 Logger.e("AudioStreamViewModel", "Failed to stop stream", e)
             } finally {
                 isStopStreamRequestPending = false
+                releaseLanRouteForStream()
             }
         }
+    }
+
+    private fun releaseLanRouteForStream() {
+        if (!lanRouteHeldForStream) return
+        lanRouteHeldForStream = false
+        LanRouteBinder.release()
     }
 
     fun setMode(mode: ConnectionMode) {
@@ -860,6 +877,7 @@ class AudioStreamViewModel : ViewModel() {
         closed.set(true)
         userWantsStreaming = false
         discoveryManager.stopDiscovery()
+        releaseLanRouteForStream()
         wifiNetworkMonitor.stop()
         val engineCloseJob = _audioEngine.close()
         auxiliaryScope.cancel()
