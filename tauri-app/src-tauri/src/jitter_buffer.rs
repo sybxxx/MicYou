@@ -289,6 +289,11 @@ impl JitterBuffer {
         None
     }
 
+    /// Number of regular audio packets currently held for playback (diagnostics).
+    pub fn buffered_count(&self) -> usize {
+        self.buffer.len()
+    }
+
     /// Return every playable packet that is still buffered during shutdown.
     ///
     /// Normal playback waits for the prebuffer threshold and is conservative

@@ -405,6 +405,9 @@ pub async fn start_server_inner(
 
         let mut audio_received_for_session = false;
         let mut aec_runtime_available = true;
+        // 10ms-poll ticks while a session is active; one diagnostic log line
+        // every 500 ticks (~5s) keeps buffer depth observable in the field.
+        let mut buffer_status_tick: u32 = 0;
         // A newly started server always begins with a fresh runtime state, even
         // before the first client session arrives.
         if loopback.is_some() {
@@ -474,6 +477,20 @@ pub async fn start_server_inner(
                     // the start of each utterance). Idle servers sleep 500ms.
                     let session_active =
                         sync_loopback(&mut audio_received_for_session, &mut aec_runtime_available);
+                    if session_active {
+                        buffer_status_tick += 1;
+                        if buffer_status_tick >= 500 {
+                            buffer_status_tick = 0;
+                            log::info!(
+                                target: "audio",
+                                "buffer status: output_queue={:.0}ms jitter_buffer={}pkts",
+                                audio_manager.queued_ms(),
+                                jb.buffered_count()
+                            );
+                        }
+                    } else {
+                        buffer_status_tick = 0;
+                    }
                     std::thread::sleep(std::time::Duration::from_millis(if session_active {
                         10
                     } else {

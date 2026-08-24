@@ -580,6 +580,12 @@ impl AudioOutputManager {
         }
     }
 
+    /// Current buffered audio depth in milliseconds at the device clock
+    /// (diagnostics; assumes the 48 kHz processing rate).
+    pub fn queued_ms(&self) -> f64 {
+        self.queued_samples() as f64 / self.device_channels.max(1) as f64 / 48.0
+    }
+
     /// Give the cpal callback a bounded opportunity to play samples that were
     /// accepted before the network session ended. Dropping the stream
     /// immediately makes the final part of an utterance invisible to programs
