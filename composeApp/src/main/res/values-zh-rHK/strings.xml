@@ -88,6 +88,8 @@
     <string name="errorNetworkUnreachableTitle">網路去唔到</string>
     <string name="errorPermissionDeniedMessage">权限唔够，做唔到呢个操作。请检查系统设定中的应用程式权限。</string>
     <string name="errorPermissionDeniedTitle">權限唔夠</string>
+    <string name="errorVpnBlockedTitle">连线俾 VPN 擋咗</string>
+    <string name="errorVpnBlockedMessage">系统防火墙挡咗 MicYou 直连区网嘅流量。通常系因为个 VPN 开咗「阻挡非 VPN 连线」呢类保护。</string>
     <string name="errorPortInUseMessage">埠口 %s 已經俾其他應用程式用緊。請揀過另一個埠口或者閂咗用緊嗰個應用程式。</string>
     <string name="errorPortInUseTitle">埠口俾人用咗</string>
     <string name="errorProtocolErrorMessage">通訊嗰陣發生協定錯誤。請重開兩邊嘅應用程式。</string>
@@ -415,4 +417,7 @@
     <string name="qs_toast_stopped">串流停咗</string>
     <string name="firstLaunchDownloadPc">下载电脑端</string>
     <string name="errorSuggestionCheckSettings">检查系统设定中的应用程式权限</string>
+    <string name="errorSuggestionVpnAllowLan">喺个 VPN App 度开「绕过区域网路/允许本机网路」选项（如有）</string>
+    <string name="errorSuggestionVpnDisableAlwaysOn">喺系统设定嘅「VPN」度，閂咗个 App 嘅「永远开启 VPN」同「阻挡唔带 VPN 嘅连线」</string>
+    <string name="errorSuggestionVpnTemporarilyOff">推流嗰阵暂时閂咗个 VPN，搞掂再开返</string>
 </resources>

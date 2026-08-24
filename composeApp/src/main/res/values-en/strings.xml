@@ -110,6 +110,8 @@
     <string name="errorPermissionDeniedMessage">Insufficient permissions to perform this operation. Please check app permissions in system settings.</string>
     <string name="errorRecordingPermissionDenied">Recording permission denied</string>
     <string name="errorPermissionDeniedTitle">Permission Denied</string>
+    <string name="errorVpnBlockedTitle">Blocked by VPN</string>
+    <string name="errorVpnBlockedMessage">The system firewall blocked MicYou\'s direct LAN connection. This usually happens when the VPN is set to block traffic that bypasses its tunnel (\"Block connections without VPN\").</string>
     <string name="errorPortInUseMessage">Port %s is already in use by another application. Please choose a different port or close the conflicting application.</string>
     <string name="errorPortInUseTitle">Port Already in Use</string>
     <string name="errorProtocolErrorMessage">A protocol error occurred during communication. Please restart both applications.</string>
@@ -416,4 +418,7 @@
     <string name="qs_toast_stopped">Streaming stopped</string>
     <string name="firstLaunchDownloadPc">Download PC App</string>
     <string name="errorSuggestionCheckSettings">Check app permissions in system settings</string>
+    <string name="errorSuggestionVpnAllowLan">In your VPN app, enable \"Bypass LAN\" or \"Allow local network access\" if available</string>
+    <string name="errorSuggestionVpnDisableAlwaysOn">In system Settings › VPN, turn off \"Always-on VPN\" and \"Block connections without VPN\"</string>
+    <string name="errorSuggestionVpnTemporarilyOff">Temporarily disconnect the VPN while streaming, then reconnect afterwards</string>
 </resources>

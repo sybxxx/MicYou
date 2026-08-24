@@ -42,8 +42,10 @@ object LanRouteBinder {
             Logger.w(TAG, "No Wi-Fi/Ethernet network available (vpnDefault=${isVpnDefault(manager)})")
             return null
         }
-        if (lanNetwork == boundNetwork) return lanNetwork
 
+        // Rebind on every acquire: the system silently clears the process binding
+        // when the bound network bounces, so a cached check would keep routing new
+        // sockets through the default (possibly VPN) network.
         val bound = try {
             manager.bindProcessToNetwork(lanNetwork)
         } catch (e: Exception) {

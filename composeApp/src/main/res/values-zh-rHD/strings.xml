@@ -88,6 +88,8 @@
     <string name="errorNetworkUnreachableTitle">网络无法到达项目</string>
     <string name="errorPermissionDeniedMessage">权限不足，无法执行此操作。请检查系统设定中的应用程式权限项。</string>
     <string name="errorPermissionDeniedTitle">权限被拒绝项目</string>
+    <string name="errorVpnBlockedTitle">连线遭虚拟专用网络拦截项目</string>
+    <string name="errorVpnBlockedMessage">系统防火墙已对局域网直接连线之流量实施拦截作业。该情况通常系由虚拟专用网络所启用之“阻止非虚拟专用网络连线”类保护功能所致。</string>
     <string name="errorPortInUseMessage">港口 %s 已被其他应用程式占用。请选择其他港口或关闭占用该港口的应用程式。</string>
     <string name="errorPortInUseTitle">港口被占用项目</string>
     <string name="errorProtocolErrorMessage">通讯过程中发生通讯协定错误。请重新启动两端应用程式。</string>
@@ -403,6 +405,9 @@
     <string name="errorIpChangeRestartFailed">IP 切换后重新连接失败: %s</string>
     <string name="firstLaunchDownloadPc">下载电脑终端项</string>
     <string name="errorSuggestionCheckSettings">检查系统设定中的应用程式权限项</string>
+    <string name="errorSuggestionVpnAllowLan">于虚拟专用网络应用程式中启用“绕过区域网路/允许本机网路”之选项（如存在该项）。</string>
+    <string name="errorSuggestionVpnDisableAlwaysOn">于系统设定之「虚拟专用网络 (VPN)」项目中，关闭该应用程式的「一律启用虚拟专用网络」与「阻止不含虚拟专用网络的连线」等功能项。</string>
+    <string name="errorSuggestionVpnTemporarilyOff">进行音讯传输作业时暂时中断虚拟专用网络连线，待作业完成后重新启用。</string>
     <string name="notification_idle_title">MicYou 已开启</string>
     <string name="notification_idle_text">点击管理</string>
 </resources>

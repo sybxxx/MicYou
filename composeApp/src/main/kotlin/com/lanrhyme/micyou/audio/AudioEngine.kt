@@ -727,10 +727,15 @@ class AudioEngine constructor() {
                             if (transportProtocol == TransportProtocol.Tcp || transportProtocol == TransportProtocol.Both) {
                                 Logger.i("AudioEngine", "Connecting via TCP to $targetIp:$targetPort")
                                 val socketBuilder = aSocket(newSelector)
-                                newTcpSocket = socketBuilder.tcp().connect(targetIp, targetPort) {
-                                    keepAlive = true
-                                    socketTimeout = 10000L
-                                    noDelay = true
+                                try {
+                                    newTcpSocket = socketBuilder.tcp().connect(targetIp, targetPort) {
+                                        keepAlive = true
+                                        socketTimeout = 10000L
+                                        noDelay = true
+                                    }
+                                } catch (e: Exception) {
+                                    Logger.e("AudioEngine", "TCP connect to $targetIp:$targetPort failed: ${e.message}")
+                                    throw e
                                 }
                                 newInput = newTcpSocket.openReadChannel()
                                 newOutput = newTcpSocket.openWriteChannel(autoFlush = true)
@@ -764,8 +769,13 @@ class AudioEngine constructor() {
                             if (mode == ConnectionMode.Wifi && transportProtocol == TransportProtocol.Both) {
                                 val udpPort = calculateUdpPort(targetPort)
                                 Logger.i("AudioEngine", "Connecting via UDP to $targetIp:$udpPort")
-                                newUdpSocket = DatagramSocket().also {
-                                    it.sendBufferSize = 256 * 1024
+                                newUdpSocket = try {
+                                    DatagramSocket().also {
+                                        it.sendBufferSize = 256 * 1024
+                                    }
+                                } catch (e: Exception) {
+                                    Logger.e("AudioEngine", "UDP socket setup for $targetIp:$udpPort failed: ${e.message}")
+                                    throw e
                                 }
                                 newUdpAddress = InetSocketAddress(targetIp, udpPort)
                             }

@@ -18,6 +18,7 @@ enum class ConnectionErrorType {
 
     // 权限相关错误
     PermissionDenied,        // 权限不足
+    VpnBlocked,              // VPN 防火墙拦截了局域网直连流量
 
     // 设备相关错误
     DeviceNotFound,          // 设备未找到
@@ -68,6 +69,11 @@ object ConnectionErrorHelper {
         val message = exception.message ?: ""
         
         return when {
+            // VPN kill-switch style firewall rejecting LAN-bound traffic (EPERM)
+            message.contains("not permitted", ignoreCase = true) ||
+            message.contains("eperm", ignoreCase = true) ->
+                ConnectionErrorType.VpnBlocked
+
             // 网络超时
             message.contains("timeout", ignoreCase = true) ||
             message.contains("Timeout", ignoreCase = true) ->
@@ -202,6 +208,18 @@ object ConnectionErrorHelper {
                 localizedMessage = getString(R.string.errorPermissionDeniedMessage),
                 recoverySuggestions = listOf(
                     getString(R.string.errorSuggestionCheckSettings)
+                )
+            )
+
+            ConnectionErrorType.VpnBlocked -> ConnectionErrorDetails(
+                type = type,
+                originalMessage = originalMessage,
+                localizedTitle = getString(R.string.errorVpnBlockedTitle),
+                localizedMessage = getString(R.string.errorVpnBlockedMessage),
+                recoverySuggestions = listOf(
+                    getString(R.string.errorSuggestionVpnAllowLan),
+                    getString(R.string.errorSuggestionVpnDisableAlwaysOn),
+                    getString(R.string.errorSuggestionVpnTemporarilyOff)
                 )
             )
             

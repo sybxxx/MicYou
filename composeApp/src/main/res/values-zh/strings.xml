@@ -88,6 +88,8 @@
     <string name="errorNetworkUnreachableTitle">网络不可达</string>
     <string name="errorPermissionDeniedMessage">权限不足，无法执行此操作。请检查系统设置中的应用权限。</string>
     <string name="errorPermissionDeniedTitle">权限不足</string>
+    <string name="errorVpnBlockedTitle">连接被 VPN 拦截</string>
+    <string name="errorVpnBlockedMessage">系统防火墙拦截了 MicYou 的局域网直连流量。这通常是因为 VPN 开启了“阻止非 VPN 连接”类的保护。</string>
     <string name="errorPortInUseMessage">端口 %s 已被其他应用程序占用。请选择其他端口或关闭占用该端口的应用。</string>
     <string name="errorPortInUseTitle">端口已被占用</string>
     <string name="errorProtocolErrorMessage">通信过程中发生协议错误。请重启两端应用。</string>
@@ -415,4 +417,7 @@
     <string name="qs_toast_stopped">串流已结束</string>
     <string name="firstLaunchDownloadPc">下载电脑端</string>
     <string name="errorSuggestionCheckSettings">检查系统设置中的应用权限</string>
+    <string name="errorSuggestionVpnAllowLan">在 VPN 应用中开启“绕过局域网/允许本地网络”选项（如有）</string>
+    <string name="errorSuggestionVpnDisableAlwaysOn">在系统设置的“VPN”中，关闭该应用的“始终开启的 VPN”和“阻止不带 VPN 的连接”</string>
+    <string name="errorSuggestionVpnTemporarilyOff">推流时暂时断开 VPN，结束后再重新打开</string>
 </resources>
