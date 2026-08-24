@@ -297,7 +297,11 @@ fn wasapi_loopback_thread(
         while active.load(Ordering::Relaxed) {
             let available = audio_client.get_available_space_in_frames()?;
             if available == 0 {
-                h_event.wait_for_event(100)?;
+                // WASAPI loopback only signals the event while the audio engine
+                // renders samples; during silence no packets are produced and
+                // the wait times out. That is a normal idle state, not a device
+                // failure, so swallow the timeout and keep polling.
+                let _ = h_event.wait_for_event(100);
                 continue;
             }
 
@@ -318,7 +322,8 @@ fn wasapi_loopback_thread(
                 }
             }
 
-            h_event.wait_for_event(100)?;
+            // Same silence-timeout tolerance as the idle branch above.
+            let _ = h_event.wait_for_event(100);
         }
 
         audio_client.stop_stream()?;
@@ -723,5 +728,41 @@ mod tests {
         release.store(true, Ordering::Relaxed);
         assert!(capture.join_capture_thread(Duration::from_secs(1)));
         assert!(capture.thread.lock().unwrap().is_none());
+    }
+
+    #[cfg(target_os = "windows")]
+    fn windows_has_render_device() -> bool {
+        use wasapi::{get_default_device, Direction};
+        let _ = wasapi::initialize_mta();
+        get_default_device(&Direction::Render).is_ok()
+    }
+
+    /// Regression test: the WASAPI event handle is only signalled while the
+    /// audio engine renders samples, so propagating the `wait_for_event`
+    /// timeout killed the capture thread (and disabled AEC for the session)
+    /// whenever the speakers were silent. The loop must treat that timeout as
+    /// idle time instead. Skips on machines without a render device.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn wasapi_loopback_stays_alive_while_speakers_are_silent() {
+        if !windows_has_render_device() {
+            return;
+        }
+
+        let capture = LoopbackCapture::new();
+        capture.start().expect("loopback capture must start");
+
+        // The old implementation failed within ~100ms of waiting on a silent
+        // device; wait comfortably longer so the regression can show up.
+        std::thread::sleep(Duration::from_millis(1500));
+
+        assert!(
+            capture.take_failure_reason().is_none(),
+            "loopback thread must survive silent speakers"
+        );
+        assert!(capture.is_active());
+
+        capture.stop();
+        assert!(!capture.is_active());
     }
 }
