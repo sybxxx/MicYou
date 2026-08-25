@@ -146,6 +146,8 @@ pub struct ServerPrefs {
     /// socket rebuild after sleep/resume). Note: saving connection settings
     /// from the GUI (which does not send this key) resets it to true.
     pub listener_watchdog: bool,
+    /// Reject Wi-Fi clients that cannot establish the encrypted transport.
+    pub require_encryption: bool,
 }
 
 impl Default for ServerPrefs {
@@ -158,6 +160,7 @@ impl Default for ServerPrefs {
             auto_bind: true,
             output_device: String::new(),
             listener_watchdog: true,
+            require_encryption: false,
         }
     }
 }

@@ -302,6 +302,27 @@ pub async fn start_server(
     start_server_inner(&state, port, mode, bind_address, output_device, events).await
 }
 
+/// Loads (or first-use creates) the server identity plus paired-device store.
+fn build_server_security() -> Result<crate::secure_channel::SharedSecurity, String> {
+    use crate::secure_channel::{SecureHandshake, ServerSecurity};
+    use crate::security::{PairedDeviceStore, ServerIdentity};
+    use std::sync::{Arc, Mutex};
+
+    let identity = Arc::new(ServerIdentity::load_or_create()?);
+    let store = PairedDeviceStore::load_or_create(crate::security::paired_devices_path())?;
+    let handshake = SecureHandshake::with_paired_devices(identity, Arc::new(Mutex::new(store)));
+    let prefs = crate::app_config::load_server_prefs();
+    Ok(Arc::new(ServerSecurity {
+        handshake,
+        require_encryption: prefs.require_encryption,
+    }))
+}
+
+#[tauri::command]
+pub fn resolve_pairing(state: tauri::State<'_, ServerState>, request_id: String, accept: bool) -> bool {
+    state.pairing_broker.resolve(&request_id, accept)
+}
+
 /// Core server startup, independent of the Tauri runtime.
 /// Shared by the GUI, CLI (`micyou serve`) and TUI (`micyou-tui`).
 pub async fn start_server_inner(
@@ -312,6 +333,9 @@ pub async fn start_server_inner(
     output_device: Option<String>,
     events: crate::events::SharedEvents,
 ) -> Result<String, String> {
+    // Load/create the long-lived identity and paired-device store up front so
+    // a broken config fails startup instead of every future connection.
+    let security = build_server_security()?;
     let udp_port = validate_server_port(port, &mode)?;
 
     let _lifecycle_guard = state.lifecycle_gate.enter().await;
@@ -812,6 +836,9 @@ pub async fn start_server_inner(
     let active_connection_tcp = state.active_connection.clone();
     let takeover_lock_tcp = state.takeover_lock.clone();
     let active_audio_session_tcp = state.active_audio_session.clone();
+    let security = security;
+    let session_crypto_tcp = state.session_crypto.clone();
+    let pairing_broker_tcp = state.pairing_broker.clone();
     let (tcp_ready_tx, tcp_ready_rx) = tokio::sync::oneshot::channel();
     let events_tcp_fault = events.clone();
     let tcp_task = tokio::spawn(async move {
@@ -826,6 +853,9 @@ pub async fn start_server_inner(
             active_connection_tcp,
             takeover_lock_tcp,
             active_audio_session_tcp,
+            security,
+            session_crypto_tcp,
+            pairing_broker_tcp,
             tcp_rebind_rx,
             tcp_ready_tx,
         )
@@ -840,6 +870,7 @@ pub async fn start_server_inner(
     let port_udp = udp_port.expect("non-web port validation must produce a UDP port");
     let stats_udp = state.network_stats.clone();
     let active_audio_session_udp = state.active_audio_session.clone();
+    let session_crypto_udp = state.session_crypto.clone();
     let bind_addr_udp = bind_addr.clone();
     let (udp_ready_tx, udp_ready_rx) = tokio::sync::oneshot::channel();
     let events_udp_fault = events.clone();
@@ -851,6 +882,7 @@ pub async fn start_server_inner(
             token_udp,
             stats_udp,
             active_audio_session_udp,
+            session_crypto_udp,
             udp_rebind_rx,
             udp_ready_tx,
         )

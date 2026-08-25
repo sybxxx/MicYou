@@ -1,4 +1,5 @@
 use crate::commands::system::SpectrumPayload;
+use crate::pairing::SessionSecurityState;
 use crate::stats::AudioMetrics;
 use crate::tcp_server::DeviceInfo;
 use serde::Serialize;
@@ -8,6 +9,13 @@ use tauri::Emitter;
 use tauri::Manager;
 
 const AUDIO_LEVEL_EVENT_INTERVAL_MS: u64 = 75;
+
+#[derive(serde::Serialize, Clone, Debug)]
+pub struct PairingRequestInfo {
+    pub request_id: String,
+    pub device_name: String,
+    pub sas: String,
+}
 
 /// Events emitted by the audio server core, decoupled from Tauri.
 ///
@@ -27,6 +35,9 @@ pub trait ServerEvents: Send + Sync + 'static {
     fn web_client_count(&self, count: u32);
     fn install_progress(&self, message: String);
     fn aec_status_changed(&self, status: AecStatus);
+    fn pairing_requested(&self, request: PairingRequestInfo);
+    fn pairing_completed(&self, device_name: String);
+    fn session_security_changed(&self, encrypted: bool);
 }
 
 #[derive(serde::Serialize, Clone, Debug)]
@@ -48,6 +59,11 @@ pub struct TauriEventSink {
 pub struct ServerFault {
     pub component: String,
     pub message: String,
+}
+
+#[derive(serde::Serialize, Clone, Debug)]
+pub struct PairingCompletedInfo {
+    pub device_name: String,
 }
 
 impl TauriEventSink {
@@ -135,6 +151,26 @@ impl ServerEvents for TauriEventSink {
 
     fn aec_status_changed(&self, status: AecStatus) {
         self.emit_app_event("aec-status-changed", status);
+    }
+
+    fn pairing_requested(&self, request: PairingRequestInfo) {
+        self.emit_app_event("pairing-requested", request);
+    }
+
+    fn pairing_completed(&self, device_name: String) {
+        self.emit_app_event(
+            "pairing-completed",
+            PairingCompletedInfo {
+                device_name,
+            },
+        );
+    }
+
+    fn session_security_changed(&self, encrypted: bool) {
+        self.emit_app_event(
+            "session-security",
+            SessionSecurityState { encrypted },
+        );
     }
 }
 

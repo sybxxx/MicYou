@@ -10,6 +10,7 @@ pub mod jitter_buffer;
 pub mod listener_watchdog;
 pub mod mode_lock;
 pub mod network;
+pub mod pairing;
 #[cfg(target_os = "linux")]
 pub mod pipewire;
 pub mod secure_channel;
@@ -88,6 +89,8 @@ pub fn run() {
             active_connection: Arc::new(Mutex::new(None)),
             takeover_lock: Arc::new(Mutex::new(())),
             active_audio_session: Arc::new(RwLock::new(Default::default())),
+            session_crypto: Arc::new(Mutex::new(None::<crate::pairing::ActiveSessionCrypto>)),
+            pairing_broker: Arc::new(crate::pairing::PairingBroker::default()),
             #[cfg(feature = "web-server")]
             web_server: Arc::new(Mutex::new(None)),
             #[cfg(feature = "web-server")]
@@ -141,6 +144,7 @@ pub fn run() {
             commands::update_audio_settings,
             commands::start_server,
             commands::stop_server,
+            commands::system::resolve_pairing,
             commands::about::get_sponsors,
             commands::about::export_log,
             commands::about::get_app_version,

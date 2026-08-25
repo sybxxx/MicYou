@@ -58,6 +58,12 @@ fn parse_datagram(datagram: &[u8]) -> Option<&[u8]> {
     Some(&datagram[UDP_HEADER_LEN..end])
 }
 
+/// True when the datagram carries the sealed-transport magic byte prefix.
+fn is_secure_datagram(datagram: &[u8]) -> bool {
+    datagram.len() >= 4
+        && i32::from_be_bytes(datagram[0..4].try_into().unwrap()) == micyou_protocol::UDP_SECURE_MAGIC
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AudioPacketAcceptance {
     Rejected,
@@ -143,6 +149,7 @@ pub async fn start_udp_server(
     cancel_token: CancellationToken,
     stats: std::sync::Arc<crate::stats::NetworkStats>,
     active_audio_session: SharedActiveAudioSession,
+    session_crypto_slot: crate::pairing::SharedSessionCrypto,
     mut rebind_requests: tokio::sync::watch::Receiver<u64>,
     ready: tokio::sync::oneshot::Sender<Result<(), String>>,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
@@ -197,10 +204,26 @@ pub async fn start_udp_server(
                     }
                 };
 
-                let Some(payload) = parse_datagram(&buf[..len]) else {
+                let datagram = &buf[..len];
+                // Legacy magic first; sealed datagrams decrypt through the active
+                // session's key material and continue down the same pipeline.
+                let payload = match parse_datagram(datagram) {
+                    Some(payload) => Some(payload.to_vec()),
+                    None if is_secure_datagram(datagram) => {
+                        let slot = session_crypto_slot.lock().await;
+                        match slot.as_ref() {
+                            Some(entry) if entry.peer_ip == addr.ip() => {
+                                entry.udp.open(datagram).ok()
+                            }
+                            _ => None,
+                        }
+                    }
+                    _ => None,
+                };
+                let Some(payload) = payload else {
                     continue;
                 };
-                match MessageWrapper::decode(payload) {
+                match MessageWrapper::decode(payload.as_slice()) {
                     Ok(msg) => {
                         if let Some(audio_packet_ordered) = msg.audio_packet {
                             if !validate_audio_packet(&audio_packet_ordered) {
@@ -294,6 +317,7 @@ mod tests {
             cancel.clone(),
             Arc::new(crate::stats::NetworkStats::default()),
             active_audio_session,
+            Arc::new(tokio::sync::Mutex::new(None)),
             rebind_rx,
             ready_tx,
         ));

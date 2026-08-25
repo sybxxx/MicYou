@@ -105,4 +105,23 @@ impl ServerEvents for TuiEventSink {
     fn aec_status_changed(&self, status: AecStatus) {
         self.send_event(Event::AecStatus(status));
     }
+
+    fn pairing_requested(&self, request: tauri_app_lib::events::PairingRequestInfo) {
+        // Headless-style handling: log loudly; the broker auto-approves in TUI mode.
+        eprintln!(
+            "[pairing] device '{}' SAS {}",
+            request.device_name, request.sas
+        );
+    }
+
+    fn pairing_completed(&self, device_name: String) {
+        eprintln!("[pairing] paired with '{device_name}'");
+    }
+
+    fn session_security_changed(&self, encrypted: bool) {
+        eprintln!(
+            "[security] session {}",
+            if encrypted { "encrypted" } else { "NOT encrypted" }
+        );
+    }
 }

@@ -51,4 +51,19 @@ impl ServerEvents for CliEventSink {
             println!("[warn] AEC disabled: {reason}");
         }
     }
+    fn pairing_requested(&self, request: tauri_app_lib::events::PairingRequestInfo) {
+        println!(
+            "[pairing] device '{}' requests pairing; SAS {}",
+            request.device_name, request.sas
+        );
+    }
+    fn pairing_completed(&self, device_name: String) {
+        println!("[pairing] paired with '{device_name}'");
+    }
+    fn session_security_changed(&self, encrypted: bool) {
+        println!(
+            "[security] session {}",
+            if encrypted { "encrypted" } else { "NOT encrypted" }
+        );
+    }
 }

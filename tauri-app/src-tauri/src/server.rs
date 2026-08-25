@@ -159,6 +159,8 @@ pub struct ServerState {
     pub active_connection: crate::tcp_server::SharedActiveConnection,
     pub takeover_lock: crate::tcp_server::SharedTakeoverLock,
     pub active_audio_session: crate::udp_server::SharedActiveAudioSession,
+    pub session_crypto: crate::pairing::SharedSessionCrypto,
+    pub pairing_broker: Arc<crate::pairing::PairingBroker>,
     #[cfg(feature = "web-server")]
     pub web_server: Arc<Mutex<Option<crate::web_server::WebServer>>>,
     #[cfg(feature = "web-server")]

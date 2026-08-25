@@ -1,5 +1,5 @@
 use crate::events::SharedEvents;
-use micyou_protocol::micyou::MessageWrapper;
+use micyou_protocol::micyou::{MessageWrapper, SecureResult};
 use micyou_protocol::{HANDSHAKE_CLIENT_STR, HANDSHAKE_SERVER_STR, PACKET_MAGIC};
 use prost::Message;
 use serde::Serialize;
@@ -18,6 +18,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::audio_stream::{validate_audio_packet, AudioStreamEvent, ExpectedAudioSession};
 use crate::listener_watchdog::{wait_or_cancel, REBIND_RETRY_INTERVAL};
+use crate::pairing::{ActiveSessionCrypto, PairingBroker, SharedSessionCrypto};
+use crate::secure_channel::{Direction, SessionCrypto, AEAD_TAG_LEN};
 use crate::udp_server::{
     try_accept_audio_packet, ActiveAudioSession, AudioPacketAcceptance, SharedActiveAudioSession,
 };
@@ -27,6 +29,7 @@ const FRAME_HEADER_LEN: usize = 8;
 // control-message headroom while bounding allocations from an untrusted peer.
 const MAX_CONTROL_PAYLOAD_LEN: usize = 1024 * 1024;
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
+const PAIRING_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_CONCURRENT_CLIENTS: usize = 64;
 const FRAME_READ_TIMEOUT: Duration = Duration::from_secs(10);
 const FRAME_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -96,6 +99,9 @@ pub async fn start_tcp_server(
     active_connection: SharedActiveConnection,
     takeover_lock: SharedTakeoverLock,
     active_audio_session: SharedActiveAudioSession,
+    security: crate::secure_channel::SharedSecurity,
+    session_crypto_slot: SharedSessionCrypto,
+    pairing_broker: Arc<PairingBroker>,
     mut rebind_requests: tokio::sync::watch::Receiver<u64>,
     ready: tokio::sync::oneshot::Sender<Result<(), String>>,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
@@ -183,6 +189,9 @@ pub async fn start_tcp_server(
                             let active_connection = active_connection.clone();
                             let takeover_lock = takeover_lock.clone();
                             let active_audio_session = active_audio_session.clone();
+                            let security = Arc::clone(&security);
+                            let session_crypto_slot = Arc::clone(&session_crypto_slot);
+                            let pairing_broker = Arc::clone(&pairing_broker);
                             let client_cancel = cancel_token.clone();
                             clients.spawn(async move {
                                 let _permit = permit;
@@ -196,6 +205,9 @@ pub async fn start_tcp_server(
                                     active_connection,
                                     takeover_lock,
                                     active_audio_session,
+                                    security,
+                                    session_crypto_slot,
+                                    pairing_broker,
                                     client_cancel,
                                 ).await {
                                     if !is_health_probe {
@@ -316,6 +328,135 @@ fn parse_frame_header(header: &[u8; FRAME_HEADER_LEN]) -> Result<usize, IoError>
         .checked_add(payload_len)
         .ok_or_else(|| IoError::new(ErrorKind::InvalidData, "frame length overflow"))?;
     Ok(payload_len)
+}
+
+async fn read_raw_frame<R>(
+    reader: &mut R,
+    cancel_token: &CancellationToken,
+) -> Result<([u8; FRAME_HEADER_LEN], Vec<u8>), Box<dyn Error + Send + Sync>>
+where
+    R: AsyncReadExt + Unpin,
+{
+    tokio::select! {
+        _ = cancel_token.cancelled() => Err(IoError::new(ErrorKind::Other, "cancelled").into()),
+        result = timeout(FRAME_READ_TIMEOUT, async {
+            let mut header = [0u8; FRAME_HEADER_LEN];
+            reader.read_exact(&mut header).await?;
+            let payload_len = parse_frame_header(&header)?;
+            // The parser guarantees this allocation never exceeds header + 1 MiB.
+            let mut payload = vec![0u8; payload_len];
+            reader.read_exact(&mut payload).await?;
+            Ok::<Vec<u8>, IoError>(payload)
+        }) => {
+            let payload = result.map_err(|_| IoError::new(ErrorKind::TimedOut, "control frame read timed out"))??;
+            Ok((header_from_payload(payload.len()), payload))
+        }
+    }
+}
+
+fn header_from_payload(payload_len: usize) -> [u8; FRAME_HEADER_LEN] {
+    let mut header = [0u8; FRAME_HEADER_LEN];
+    header[..4].copy_from_slice(&PACKET_MAGIC.to_be_bytes());
+    header[4..].copy_from_slice(&(payload_len as i32).to_be_bytes());
+    header
+}
+
+/// Decrypts a frame payload when the session is encrypted, then decodes it.
+fn decode_frame(
+    session_crypto: &Option<Arc<SessionCrypto>>,
+    header8: &[u8; FRAME_HEADER_LEN],
+    payload: &[u8],
+) -> Result<MessageWrapper, Box<dyn Error + Send + Sync>> {
+    let plaintext = match session_crypto {
+        Some(crypto) => crypto.open_tcp_payload(Direction::ClientToServer, header8, payload)?,
+        None => payload.to_vec(),
+    };
+    Ok(MessageWrapper::decode(plaintext.as_slice())?)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn establish_secure_session(
+    socket: &mut TcpStream,
+    security: &crate::secure_channel::ServerSecurity,
+    broker: &PairingBroker,
+    events: &SharedEvents,
+    hello_payload: &[u8],
+    connection_id: u64,
+    cancel_token: &CancellationToken,
+) -> Result<Arc<SessionCrypto>, Box<dyn Error + Send + Sync>> {
+    let (server_hello, pending, sas, client_known, claimed_name) =
+        security.handshake.accept_client_hello(hello_payload)?;
+
+    let hello_frame = MessageWrapper {
+        secure_server_hello: Some(server_hello),
+        ..MessageWrapper::default()
+    };
+    write_plain_frame(socket, &hello_frame.encode_to_vec(), cancel_token).await?;
+
+    if !client_known {
+        let request_id = format!("conn-{connection_id}");
+        let verdict = match broker.begin(&request_id, &claimed_name, &sas, events) {
+            Some(rx) => tokio::select! {
+                _ = cancel_token.cancelled() => false,
+                result = timeout(PAIRING_TIMEOUT, rx) => matches!(result, Ok(Ok(true))),
+            },
+            None => true,
+        };
+        if !verdict {
+            log::warn!(
+                target: "server",
+                "Pairing for '{claimed_name}' denied or timed out",
+            );
+            return Err("pairing rejected".into());
+        }
+        let identity_b64 = pending.client_identity_b64().to_string();
+        security
+            .handshake
+            .remember_client(&identity_b64, &claimed_name)?;
+        events.pairing_completed(claimed_name);
+    }
+
+    // The verdict travels inside the encrypted channel: both sides derive the
+    // session keys right after the signed exchange, so the client authenticates
+    // acceptance instead of trusting a plaintext flag. The client's encrypted
+    // SecureConfirm is consumed here so the next frame on the wire is Connect.
+    let session = Arc::new(pending.finish()?);
+    let (confirm_header, confirm_payload) = read_raw_frame(socket, cancel_token).await?;
+    let confirmed = decode_frame(&Some(Arc::clone(&session)), &confirm_header, &confirm_payload)?;
+    if confirmed.secure_confirm.is_none() {
+        return Err("expected SecureConfirm after key exchange".into());
+    }
+
+    let result_frame = MessageWrapper {
+        secure_result: Some(SecureResult { accepted: true }),
+        ..MessageWrapper::default()
+    };
+    let plain = result_frame.encode_to_vec();
+    let header = header_from_payload(plain.len() + AEAD_TAG_LEN);
+    let sealed = session.seal_tcp_payload(Direction::ServerToClient, &header, &plain)?;
+    socket.write_all(&header).await?;
+    socket.write_all(&sealed).await?;
+    socket.flush().await?;
+    Ok(session)
+}
+
+async fn write_plain_frame(
+    socket: &mut TcpStream,
+    payload: &[u8],
+    cancel_token: &CancellationToken,
+) -> Result<(), Box<dyn Error + Send + Sync>> {
+    let header = header_from_payload(payload.len());
+    tokio::select! {
+        _ = cancel_token.cancelled() => Err(IoError::new(ErrorKind::Other, "cancelled").into()),
+        result = timeout(FRAME_WRITE_TIMEOUT, async {
+            socket.write_all(&header).await?;
+            socket.write_all(payload).await?;
+            socket.flush().await
+        }) => {
+            result.map_err(|_| IoError::new(ErrorKind::TimedOut, "frame write timed out"))??;
+            Ok(())
+        }
+    }
 }
 
 async fn run_if_active<F>(
@@ -461,6 +602,9 @@ async fn handle_client(
     active_connection: SharedActiveConnection,
     takeover_lock: SharedTakeoverLock,
     active_audio_session: SharedActiveAudioSession,
+    security: crate::secure_channel::SharedSecurity,
+    session_crypto_slot: SharedSessionCrypto,
+    pairing_broker: Arc<PairingBroker>,
     cancel_token: CancellationToken,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     let mut handshake_buf = vec![0u8; HANDSHAKE_CLIENT_STR.len()];
@@ -486,19 +630,62 @@ async fn handle_client(
         }
     }
 
-    // The first framed message completes the protocol handshake. Modern clients send Connect with
-    // their audio session ID; legacy clients' first control/audio frame decodes with no Connect.
-    let first_message = tokio::select! {
-        _ = cancel_token.cancelled() => return Ok(()),
-        result = timeout(FRAME_READ_TIMEOUT, async {
-            let mut header = [0u8; FRAME_HEADER_LEN];
-            socket.read_exact(&mut header).await?;
-            let payload_len = parse_frame_header(&header)?;
-            let mut payload = vec![0u8; payload_len];
-            socket.read_exact(&mut payload).await?;
-            MessageWrapper::decode(payload.as_slice())
-                .map_err(|e| IoError::new(ErrorKind::InvalidData, e))
-        }) => result.map_err(|_| IoError::new(ErrorKind::TimedOut, "initial control frame timed out"))??,
+    // The first framed message decides between the legacy plaintext path and the
+    // encrypted path. Secure clients open with a SecureClientHello and send their
+    // Connect only after the encrypted channel is live.
+    let connection_id = NEXT_CONNECTION_ID.fetch_add(1, Ordering::Relaxed);
+    let (_first_header, first_payload) =
+        read_raw_frame(&mut socket, &cancel_token).await?;
+    let opens_with_secure_hello = MessageWrapper::decode(first_payload.as_slice())
+        .ok()
+        .map(|msg| msg.secure_client_hello.is_some())
+        .unwrap_or(false);
+
+    let secure_hello_payload = if opens_with_secure_hello {
+        MessageWrapper::decode(first_payload.as_slice())
+            .ok()
+            .and_then(|msg| msg.secure_client_hello)
+            .map(|hello| hello.encode_to_vec())
+    } else {
+        None
+    };
+
+    let session_crypto: Option<Arc<SessionCrypto>> = if let Some(hello_payload) = secure_hello_payload {
+        match establish_secure_session(
+            &mut socket,
+            &security,
+            pairing_broker.as_ref(),
+            &events,
+            &hello_payload,
+            connection_id,
+            &cancel_token,
+        )
+        .await
+        {
+            Ok(crypto) => Some(crypto),
+            Err(e) => {
+                eprintln!("Secure handshake with {} failed: {e}", addr);
+                return Err(e);
+            }
+        }
+    } else {
+        if security.require_encryption {
+            log::warn!(
+                target: "server",
+                "Rejecting plaintext client {} (requireEncryption is enabled)",
+                addr
+            );
+            return Ok(());
+        }
+        None
+    };
+
+    let first_message = if session_crypto.is_some() {
+        let (header8, payload) = read_raw_frame(&mut socket, &cancel_token).await?;
+        decode_frame(&session_crypto, &header8, &payload)?
+    } else {
+        MessageWrapper::decode(first_payload.as_slice())
+            .map_err(|e| IoError::new(ErrorKind::InvalidData, e))?
     };
     let expected_session = match first_message.connect.as_ref() {
         Some(connect) => ExpectedAudioSession::Bound(connect.session_id),
@@ -510,7 +697,6 @@ async fn handle_client(
     #[cfg(unix)]
     let raw: RawSocketHandle = std::os::unix::io::AsRawFd::as_raw_fd(&socket);
 
-    let connection_id = NEXT_CONNECTION_ID.fetch_add(1, Ordering::Relaxed);
     let (tx, mut rx) = tokio::sync::mpsc::channel::<MessageWrapper>(100);
     let takeover_token = CancellationToken::new();
 
@@ -577,6 +763,25 @@ async fn handle_client(
         events.device_disconnected();
     }
 
+    // Publish (or retire) the UDP decryption material together with the audio
+    // epoch so the receive loop only ever trusts the currently bound session.
+    match &session_crypto {
+        Some(crypto) => {
+            {
+                let mut slot = session_crypto_slot.lock().await;
+                *slot = Some(ActiveSessionCrypto {
+                    peer_ip: addr.ip(),
+                    connection_id,
+                    udp: crypto.udp_handle(),
+                });
+            }
+        }
+        None => {
+            let mut slot = session_crypto_slot.lock().await;
+            *slot = None;
+        }
+    }
+
     println!("Handshake successful with {}", addr);
     let device_info = DeviceInfo {
         name: "MicYou Mobile".to_string(),
@@ -587,8 +792,10 @@ async fn handle_client(
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_millis() as u64;
+    let encrypted_session = session_crypto.is_some();
     run_if_active(&active_connection, &takeover_token, connection_id, || {
         events.device_connected(device_info);
+        events.session_security_changed(encrypted_session);
         stats.mark_tcp_connected(current_time);
     })
     .await;
@@ -608,6 +815,7 @@ async fn handle_client(
     .await?;
 
     let (mut read_half, mut write_half) = socket.into_split();
+    let writer_crypto = session_crypto.clone();
     let writer_task = tokio::spawn(async move {
         while let Some(msg) = rx.recv().await {
             let payload = msg.encode_to_vec();
@@ -615,17 +823,26 @@ async fn handle_client(
                 eprintln!("Outgoing control payload exceeds protocol limit");
                 break;
             }
-            let Ok(payload_len) = i32::try_from(payload.len()) else {
-                break;
+            // In secure mode the AAD covers the header of the sealed frame, so
+            // the length field must describe ciphertext + tag, not plaintext.
+            let (header, body) = match &writer_crypto {
+                Some(crypto) => {
+                    let header = header_from_payload(payload.len() + AEAD_TAG_LEN);
+                    match crypto.seal_tcp_payload(Direction::ServerToClient, &header, &payload) {
+                        Ok(sealed) => (header, sealed),
+                        Err(e) => {
+                            eprintln!("Control frame seal failed: {}", e);
+                            break;
+                        }
+                    }
+                }
+                None => (header_from_payload(payload.len()), payload),
             };
-            let frame_len = match FRAME_HEADER_LEN.checked_add(payload.len()) {
-                Some(len) => len,
-                None => break,
-            };
+            let frame_len = FRAME_HEADER_LEN.checked_add(body.len());
+            let Some(frame_len) = frame_len else { break };
             let mut frame = Vec::with_capacity(frame_len);
-            frame.extend_from_slice(&PACKET_MAGIC.to_be_bytes());
-            frame.extend_from_slice(&payload_len.to_be_bytes());
-            frame.extend_from_slice(&payload);
+            frame.extend_from_slice(&header);
+            frame.extend_from_slice(&body);
             match timeout(FRAME_WRITE_TIMEOUT, write_half.write_all(&frame)).await {
                 Ok(Ok(())) => {}
                 Ok(Err(e)) => {
@@ -727,22 +944,12 @@ async fn handle_client(
         }
     });
     let task_guard = TaskGuard::new(vec![writer_task, ping_task, monitor_task]);
+    let reader_crypto = session_crypto.clone();
 
     let reader = async {
         loop {
-            let mut header = [0u8; FRAME_HEADER_LEN];
-            let frame_result = timeout(FRAME_READ_TIMEOUT, async {
-                read_half.read_exact(&mut header).await?;
-                let payload_len = parse_frame_header(&header)?;
-                // The parser guarantees this allocation never exceeds header + 1 MiB.
-                let mut payload = vec![0u8; payload_len];
-                read_half.read_exact(&mut payload).await?;
-                Ok::<Vec<u8>, IoError>(payload)
-            })
-            .await
-            .map_err(|_| IoError::new(ErrorKind::TimedOut, "control frame read timed out"))??;
-
-            let message = MessageWrapper::decode(frame_result.as_slice())?;
+            let (header, frame_result) = read_raw_frame(&mut read_half, &cancel_token).await?;
+            let message = decode_frame(&reader_crypto, &header, &frame_result)?;
             if takeover_token.is_cancelled() {
                 break;
             }
@@ -774,7 +981,14 @@ async fn handle_client(
         if let Ok(mut active_audio) = active_audio_session.write() {
             *active_audio = ActiveAudioSession::default();
         }
+        {
+            let mut slot = session_crypto_slot.lock().await;
+            if slot.as_ref().is_some_and(|entry| entry.connection_id == connection_id) {
+                *slot = None;
+            }
+        }
         events.device_disconnected();
+        events.session_security_changed(false);
     }
     reader_result
 }
@@ -882,6 +1096,9 @@ async fn handle_message(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::engine::general_purpose::STANDARD as BASE64;
+    use base64::Engine as _;
+    use micyou_protocol::SECURE_SUITE_V1;
 
     struct NoopEvents;
 
@@ -898,6 +1115,279 @@ mod tests {
         fn web_client_count(&self, _count: u32) {}
         fn install_progress(&self, _message: String) {}
         fn aec_status_changed(&self, _status: crate::events::AecStatus) {}
+        fn pairing_requested(&self, _request: crate::events::PairingRequestInfo) {}
+        fn pairing_completed(&self, _device_name: String) {}
+        fn session_security_changed(&self, _encrypted: bool) {}
+    }
+
+    fn test_security() -> crate::secure_channel::SharedSecurity {
+        use crate::secure_channel::{SecureHandshake, ServerSecurity};
+        Arc::new(ServerSecurity {
+            handshake: SecureHandshake::new(Arc::new(
+                crate::security::ServerIdentity::generate().unwrap(),
+            )),
+            require_encryption: false,
+        })
+    }
+
+    fn test_security_with_store(dir: &std::path::PathBuf) -> crate::secure_channel::SharedSecurity {
+        use crate::secure_channel::{SecureHandshake, ServerSecurity};
+        let store = crate::security::PairedDeviceStore::load_or_create(dir.join("paired_devices.json")).unwrap();
+        Arc::new(ServerSecurity {
+            handshake: SecureHandshake::with_paired_devices(
+                Arc::new(crate::security::ServerIdentity::generate().unwrap()),
+                Arc::new(std::sync::Mutex::new(store)),
+            ),
+            require_encryption: false,
+        })
+    }
+
+    /// Drives the client side of the secure handshake over a real socket and
+    /// returns the derived session crypto plus the parsed server hello.
+    async fn secure_client_connect(
+        socket: &mut TcpStream,
+        store_dir: &std::path::Path,
+    ) -> (Arc<SessionCrypto>, String) {
+        use crate::secure_channel::{
+            client_hello_core, derive_session_keys, server_hello_core, signed_transcript,
+            transcript_digest, SessionKeys,
+        };
+
+        let identity = crate::security::ServerIdentity::generate().unwrap();
+        let rng = ring::rand::SystemRandom::new();
+        let eph_private =
+            ring::agreement::EphemeralPrivateKey::generate(&ring::agreement::X25519, &rng).unwrap();
+        let eph_public = eph_private.compute_public_key().unwrap();
+
+        let mut hello = micyou_protocol::micyou::SecureClientHello {
+            suite_mask: 1 << (SECURE_SUITE_V1 - 1),
+            ephemeral_pub_key: eph_public.as_ref().to_vec(),
+            identity_pub_key: identity.public_key().to_vec(),
+            transcript_signature: Vec::new(),
+            device_name: "TestPhone".to_string(),
+        };
+        let ch_core = client_hello_core(&hello);
+        hello.transcript_signature = identity.sign(&signed_transcript(&[&ch_core]));
+        let ch_full = hello.encode_to_vec();
+
+        // Magic exchange.
+        socket.write_all(HANDSHAKE_CLIENT_STR).await.unwrap();
+        let mut server_magic = vec![0u8; HANDSHAKE_SERVER_STR.len()];
+        socket.read_exact(&mut server_magic).await.unwrap();
+
+        // Client hello frame (plaintext).
+        let hello_wrapper = MessageWrapper {
+            secure_client_hello: Some(hello.clone()),
+            ..Default::default()
+        };
+        let body = hello_wrapper.encode_to_vec();
+        socket.write_all(&(PACKET_MAGIC.to_be_bytes())).await.unwrap();
+        socket.write_all(&(body.len() as i32).to_be_bytes()).await.unwrap();
+        socket.write_all(&body).await.unwrap();
+
+        // Server hello (plaintext).
+        let mut header = [0u8; FRAME_HEADER_LEN];
+        socket.read_exact(&mut header).await.unwrap();
+        let payload_len = parse_frame_header(&header).unwrap();
+        let mut payload = vec![0u8; payload_len];
+        socket.read_exact(&mut payload).await.unwrap();
+        let server_hello = MessageWrapper::decode(payload.as_slice())
+            .unwrap()
+            .secure_server_hello
+            .expect("server hello must arrive");
+
+        assert_eq!(server_hello.suite, SECURE_SUITE_V1);
+        let sh_core = server_hello_core(
+            server_hello.suite,
+            &server_hello.identity_pub_key,
+            &server_hello.ephemeral_pub_key,
+        );
+        ring::signature::UnparsedPublicKey::new(
+            &ring::signature::ED25519,
+            server_hello.identity_pub_key.as_slice(),
+        )
+        .verify(
+            &signed_transcript(&[&ch_core, &sh_core]),
+            &server_hello.transcript_signature,
+        )
+        .expect("server signature must verify");
+
+        let peer_public = ring::agreement::UnparsedPublicKey::new(
+            &ring::agreement::X25519,
+            server_hello.ephemeral_pub_key.clone(),
+        );
+        let shared: [u8; 32] =
+            ring::agreement::agree_ephemeral(eph_private, &peer_public, |s| {
+                let mut out = [0u8; 32];
+                out.copy_from_slice(s);
+                out
+            })
+            .unwrap();
+        let transcript = transcript_digest(&ch_core, &sh_core);
+        let (keys, _sas) = derive_session_keys(&transcript, &shared).unwrap();
+        let session = SessionCrypto::new(&SessionKeys {
+            tcp_key_c2s: keys.tcp_key_c2s,
+            tcp_key_s2c: keys.tcp_key_s2c,
+            udp_key_c2s: keys.udp_key_c2s,
+            udp_nonce_prefix: keys.udp_nonce_prefix,
+        })
+        .unwrap();
+
+        // SecureConfirm (encrypted, c2s seq 0).
+        let confirm = MessageWrapper {
+            secure_confirm: Some(micyou_protocol::micyou::SecureConfirm {
+                device_name: "TestPhone".to_string(),
+            }),
+            ..Default::default()
+        };
+        let plain = confirm.encode_to_vec();
+        let sealed_header = header_from_payload(plain.len() + AEAD_TAG_LEN);
+        let sealed = session
+            .seal_tcp_payload(Direction::ClientToServer, &sealed_header, &plain)
+            .unwrap();
+        socket.write_all(&sealed_header).await.unwrap();
+        socket.write_all(&sealed).await.unwrap();
+
+        // SecureResult (encrypted, s2c seq 0).
+        let mut header = [0u8; FRAME_HEADER_LEN];
+        socket.read_exact(&mut header).await.unwrap();
+        let payload_len = parse_frame_header(&header).unwrap();
+        let mut payload = vec![0u8; payload_len];
+        socket.read_exact(&mut payload).await.unwrap();
+        let opened = session
+            .open_tcp_payload(Direction::ServerToClient, &header, &payload)
+            .unwrap();
+        let result = MessageWrapper::decode(opened.as_slice())
+            .unwrap()
+            .secure_result
+            .expect("secure result must arrive");
+        assert!(result.accepted);
+
+        // The auto-approve broker path must have persisted the device.
+        let paired = crate::security::PairedDeviceStore::load_or_create(store_dir.join("paired_devices.json")).unwrap();
+        assert!(
+            paired
+                .find(&BASE64.encode(&hello.identity_pub_key))
+                .is_some()
+        );
+
+        (Arc::new(session), "TestPhone".to_string())
+    }
+
+    #[tokio::test]
+    async fn secure_client_completes_handshake_and_streams_encrypted_audio() {
+        use prost::Message as _;
+
+        let port = {
+            let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            probe.local_addr().unwrap().port()
+        };
+        let store_dir = std::env::temp_dir().join(format!(
+            "micyou-pair-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&store_dir).unwrap();
+
+        let events: crate::events::SharedEvents = Arc::new(NoopEvents);
+        let cancel = CancellationToken::new();
+        let (audio_tx, mut audio_rx) = tokio::sync::mpsc::channel::<AudioStreamEvent>(64);
+        let (rebind_tx, rebind_rx) = tokio::sync::watch::channel(0u64);
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+
+        let server = tokio::spawn(start_tcp_server(
+            events,
+            port,
+            "127.0.0.1".to_string(),
+            cancel.clone(),
+            audio_tx,
+            Arc::new(crate::stats::NetworkStats::default()),
+            "wifi".to_string(),
+            Arc::new(Mutex::new(None)),
+            Arc::new(Mutex::new(())),
+            Arc::new(std::sync::RwLock::new(ActiveAudioSession::default())),
+            test_security_with_store(&store_dir),
+            Arc::new(tokio::sync::Mutex::new(None)),
+            Arc::new(PairingBroker::new(true)),
+            rebind_rx,
+            ready_tx,
+        ));
+
+
+        // Wait for the listener to come up.
+        for _ in 0..50 {
+            if TcpStream::connect(("127.0.0.1", port)).await.is_ok() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+
+        let mut client = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        let (session, _name) = secure_client_connect(&mut client, &store_dir).await;
+
+        // Encrypted Connect announcing the audio session id.
+        let connect = MessageWrapper {
+            connect: Some(micyou_protocol::micyou::ConnectMessage { session_id: 777 }),
+            ..Default::default()
+        };
+        let plain = connect.encode_to_vec();
+        let sealed_header = header_from_payload(plain.len() + AEAD_TAG_LEN);
+        let sealed = session
+            .seal_tcp_payload(Direction::ClientToServer, &sealed_header, &plain)
+            .unwrap();
+        client.write_all(&sealed_header).await.unwrap();
+        client.write_all(&sealed).await.unwrap();
+
+        // Give the server a beat to bind the session, then send one encrypted
+        // TCP audio packet and expect it on the audio pipeline.
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        let audio = MessageWrapper {
+            audio_packet: Some(micyou_protocol::micyou::AudioPacketMessageOrdered {
+                sequence_number: 1,
+                audio_packet: Some(micyou_protocol::micyou::AudioPacketMessage {
+                    buffer: vec![0; 4],
+                    sample_rate: 48_000,
+                    channel_count: 1,
+                    audio_format: 2,
+                }),
+                timestamp: 0,
+                fec_buffer: Vec::new(),
+                fec_sequence_number: -1,
+                session_id: 777,
+                fec_packet_lengths: Vec::new(),
+            }),
+            ..Default::default()
+        };
+        let plain = audio.encode_to_vec();
+        let sealed_header = header_from_payload(plain.len() + AEAD_TAG_LEN);
+        let sealed = session
+            .seal_tcp_payload(Direction::ClientToServer, &sealed_header, &plain)
+            .unwrap();
+        client.write_all(&sealed_header).await.unwrap();
+        client.write_all(&sealed).await.unwrap();
+
+        let mut delivered = false;
+        for _ in 0..10 {
+            match tokio::time::timeout(std::time::Duration::from_secs(2), audio_rx.recv()).await {
+                Ok(Some(AudioStreamEvent::Packet { packet, .. })) => {
+                    assert_eq!(packet.sequence_number, 1);
+                    assert_eq!(packet.session_id, 777);
+                    delivered = true;
+                    break;
+                }
+                Ok(Some(_)) => continue,
+                _ => break,
+            }
+        }
+        assert!(delivered, "expected decrypted audio packet on the pipeline");
+
+        cancel.cancel();
+        let _ = rebind_tx.send(1);
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), server).await;
+        let _ = std::fs::remove_dir_all(&store_dir);
     }
 
     #[tokio::test]
@@ -923,6 +1413,9 @@ mod tests {
             Arc::new(Mutex::new(None)),
             Arc::new(Mutex::new(())),
             Arc::new(std::sync::RwLock::new(ActiveAudioSession::default())),
+            test_security(),
+            Arc::new(tokio::sync::Mutex::new(None)),
+            Arc::new(PairingBroker::default()),
             rebind_rx,
             ready_tx,
         ));
