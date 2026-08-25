@@ -10,7 +10,10 @@ use tauri::Manager;
 
 const AUDIO_LEVEL_EVENT_INTERVAL_MS: u64 = 75;
 
+// The webview listens with camelCase payload keys; serde's default snake_case
+// silently desynced resolve_pairing from the dialog before this attribute.
 #[derive(serde::Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
 pub struct PairingRequestInfo {
     pub request_id: String,
     pub device_name: String,
@@ -62,6 +65,7 @@ pub struct ServerFault {
 }
 
 #[derive(serde::Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
 pub struct PairingCompletedInfo {
     pub device_name: String,
 }
@@ -177,6 +181,26 @@ impl ServerEvents for TauriEventSink {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pairing_payloads_use_camel_case_keys_for_the_webview() {
+        let request = serde_json::to_value(PairingRequestInfo {
+            request_id: "conn-1".into(),
+            device_name: "Pixel".into(),
+            sas: "123456".into(),
+        })
+        .unwrap();
+        assert_eq!(request["requestId"], "conn-1");
+        assert_eq!(request["deviceName"], "Pixel");
+        assert_eq!(request["sas"], "123456");
+        assert!(request.get("request_id").is_none());
+
+        let completed = serde_json::to_value(PairingCompletedInfo {
+            device_name: "Pixel".into(),
+        })
+        .unwrap();
+        assert_eq!(completed["deviceName"], "Pixel");
+    }
 
     #[test]
     fn audio_level_events_are_limited_to_ui_rate() {
