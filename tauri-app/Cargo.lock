@@ -3263,7 +3263,7 @@ dependencies = [
 
 [[package]]
 name = "micyou-app"
-version = "2.0.0-alpha4"
+version = "2.0.0-alpha5"
 dependencies = [
  "axum",
  "base64 0.22.1",
