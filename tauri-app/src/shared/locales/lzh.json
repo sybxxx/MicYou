@@ -42,6 +42,7 @@
     },
     "notify": {
       "connected": "装置已通矣。",
+      "pairingRequested": "有器 {device} 求配——盍往 MicYou 之窗，校其码而许之。",
       "disconnected": "装置已断矣。",
       "serverFault": "桌面音频服务故障矣（{component}）。",
       "udpAudioWarning": "未收手机音频，候其复连矣。",

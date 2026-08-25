@@ -42,6 +42,7 @@
     },
     "notify": {
       "connected": "裝置已成功連線",
+      "pairingRequested": "裝置 {device} 請求配對——請在 MicYou 視窗中核對配對碼並點擊允許",
       "disconnected": "裝置已斷線",
       "serverFault": "桌面音訊服務發生故障（{component}）。",
       "udpAudioWarning": "未收到手機音訊資料，正在等待重新連線。",

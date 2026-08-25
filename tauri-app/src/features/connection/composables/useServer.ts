@@ -1,6 +1,7 @@
 import { ref, computed, onMounted, onUnmounted, watch, type Ref } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useStorage } from '@vueuse/core';
 import { useI18n } from 'vue-i18n';
 import QRCode from 'qrcode';
@@ -650,6 +651,11 @@ export function useServer(options?: { audioLevel?: Ref<number>; isMuted?: Ref<bo
     // shown on both screens and must match before the user approves
     unlistenPairingRequested = await listen<PairingRequest>('pairing-requested', (event) => {
       pairingQueue.value.push(event.payload);
+      void notify(t('app.notify.pairingRequested', { device: event.payload.deviceName }));
+      // The dialog lives in the main window; surface it immediately even when
+      // the app is minimized or buried, since approval gates the connection.
+      void getCurrentWindow().setFocus().catch(() => {});
+      void getCurrentWindow().requestUserAttention(1).catch(() => {});
     });
 
     // The backend may serialize the completed-pairing info with either key

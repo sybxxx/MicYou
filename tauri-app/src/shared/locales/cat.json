@@ -42,6 +42,7 @@
     },
     "notify": {
       "connected": "设备连接成功喵~ ✓",
+      "pairingRequested": "有新设备 {device} 想配对喵~快去 MicYou 窗口核对配对码再点允许喵~",
       "disconnected": "设备断开连接喵~ (×_×;)",
       "serverFault": "桌面音频服务出故障了喵~（{component}）",
       "udpAudioWarning": "收不到手机音频数据喵~正在等手机重新连接喵~",

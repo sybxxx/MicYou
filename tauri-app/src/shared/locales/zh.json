@@ -44,6 +44,7 @@
     },
     "notify": {
       "connected": "设备已成功连接",
+      "pairingRequested": "设备 {device} 请求配对——请在 MicYou 窗口中核对配对码并点击允许",
       "disconnected": "设备已断开连接",
       "serverFault": "桌面音频服务发生故障（{component}）。",
       "udpAudioWarning": "未收到手机音频数据，正在等待重新连接。",

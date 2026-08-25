@@ -44,6 +44,7 @@
     },
     "notify": {
       "connected": "Device connected successfully.",
+      "pairingRequested": "Pairing request from {device}. Compare the code in the MicYou window and approve.",
       "disconnected": "Device disconnected.",
       "serverFault": "Desktop audio service failed ({component}).",
       "udpAudioWarning": "Audio packets stopped arriving; waiting for the phone to reconnect.",

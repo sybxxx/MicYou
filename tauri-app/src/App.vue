@@ -438,7 +438,7 @@ onUnmounted(() => {
       <!-- Main Content -->
       <div class="flex flex-1 gap-3 min-h-0">
         <!-- Left Panel -->
-        <div class="flex flex-col gap-3 transition-all duration-300" :class="audio.showMonitoringPanel.value ? 'w-[28%]' : 'w-[38%]'">
+        <div class="flex flex-col gap-3 transition-all duration-300 min-h-0" :class="audio.showMonitoringPanel.value ? 'w-[28%]' : 'w-[38%]'">
           <!-- Mode Card -->
           <div class="haze-surface rounded-2xl p-3 flex flex-col gap-2">
             <span class="text-xs text-on-surface-variant font-medium">{{ $t('app.connectionMode') }}</span>
@@ -521,7 +521,7 @@ onUnmounted(() => {
           </div>
 
           <!-- Status Card -->
-          <div class="haze-surface rounded-2xl p-4 flex-1 flex flex-col items-center justify-center text-center gap-3 group transition-all duration-300 hover:shadow-md hover:-translate-y-0.5">
+          <div class="haze-surface rounded-2xl p-4 flex-1 min-h-0 overflow-hidden flex flex-col items-center justify-center text-center gap-3 group transition-all duration-300 hover:shadow-md hover:-translate-y-0.5">
             <div class="w-12 h-12 rounded-full flex items-center justify-center transition-all duration-500 group-hover:scale-110"
                  :class="server.serverState.value === 'streaming' ? 'bg-primary/20 text-primary' : (server.serverState.value === 'starting' ? 'bg-secondary/20 text-secondary' : (server.serverState.value === 'connecting' ? 'bg-tertiary/20 text-tertiary' : 'bg-surface-variant/50 text-on-surface-variant'))">
               <CheckCircle2 v-if="server.serverState.value === 'streaming'" class="w-6 h-6" />
