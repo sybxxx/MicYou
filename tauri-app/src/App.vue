@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, computed, watchEffect, watch, nextTick } from 'vue';
 import { useStorage, onClickOutside } from '@vueuse/core';
-import { LogicalSize } from '@tauri-apps/api/window';
+import { LogicalSize, PhysicalSize } from '@tauri-apps/api/window';
 import { invoke } from '@tauri-apps/api/core';
 import { useI18n } from 'vue-i18n';
 
@@ -172,13 +172,18 @@ onMounted(() => {
   }
 });
 
-// Watch and adjust physical window dimensions when entering or leaving pocket layout mode.
-// In pocket mode the width is driven by the auto-size logic below (content width);
-// in full mode we always restore the standard 800x600 window.
-watchEffect(async () => {
-  if (pocketMode.value) return; // 袖珍模式宽度由自适应逻辑控制
+// The main window is user-resizable. Only the pocket round-trip touches the
+// size: remember the full-mode size before shrinking, restore it on the way
+// back, so entering/leaving pocket never discards the user's own layout.
+let fullModePhysicalSize: PhysicalSize | null = null;
+watch(pocketMode, async (now, before) => {
   try {
-    await win.appWindow.setSize(new LogicalSize(800, 600));
+    if (now && !before) {
+      fullModePhysicalSize = await win.appWindow.outerSize();
+    } else if (!now && before) {
+      await win.appWindow.setSize(fullModePhysicalSize ?? new LogicalSize(800, 640));
+      fullModePhysicalSize = null;
+    }
   } catch (e) {
     console.error('Failed to resize window:', e);
   }
@@ -498,30 +503,11 @@ onUnmounted(() => {
             </span>
           </div>
 
-          <!-- Security Card -->
-          <div class="haze-surface rounded-2xl p-3 flex flex-col gap-1.5">
-            <span class="text-xs text-on-surface-variant font-medium">{{ $t('app.security.requireEncryption') }}</span>
-            <div class="flex items-center justify-between gap-3">
-              <p class="text-[10px] text-on-surface-variant/80 leading-snug min-w-0">{{ $t('app.security.requireEncryptionDesc') }}</p>
-              <button
-                @click="server.requireEncryption.value = !server.requireEncryption.value"
-                class="group relative inline-flex h-8 w-14 shrink-0 cursor-pointer items-center rounded-full border-2 transition-colors duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary active:scale-95"
-                :class="server.requireEncryption.value ? 'border-primary bg-primary' : 'border-on-surface-variant bg-transparent hover:bg-on-surface-variant/10'"
-                role="switch"
-                :aria-checked="server.requireEncryption.value"
-              >
-                <div class="relative flex items-center justify-center transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)]" :class="server.requireEncryption.value ? 'translate-x-[26px]' : 'translate-x-[4px]'">
-                  <span
-                    class="pointer-events-none block rounded-full shadow-sm ring-0 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)]"
-                    :class="server.requireEncryption.value ? 'h-6 w-6 bg-on-primary' : 'h-4 w-4 bg-on-surface-variant group-hover:h-5 group-hover:w-5'"
-                  />
-                </div>
-              </button>
-            </div>
-          </div>
+          <!-- Security toggle lives in Settings → General to keep the main
+               column compact on the fixed-height window. -->
 
           <!-- Status Card -->
-          <div class="haze-surface rounded-2xl p-4 flex-1 min-h-0 overflow-hidden flex flex-col items-center justify-center text-center gap-3 group transition-all duration-300 hover:shadow-md hover:-translate-y-0.5">
+          <div class="haze-surface rounded-2xl p-4 flex-1 min-h-[88px] overflow-hidden flex flex-col items-center justify-center text-center gap-3 group transition-all duration-300 hover:shadow-md hover:-translate-y-0.5">
             <div class="w-12 h-12 rounded-full flex items-center justify-center transition-all duration-500 group-hover:scale-110"
                  :class="server.serverState.value === 'streaming' ? 'bg-primary/20 text-primary' : (server.serverState.value === 'starting' ? 'bg-secondary/20 text-secondary' : (server.serverState.value === 'connecting' ? 'bg-tertiary/20 text-tertiary' : 'bg-surface-variant/50 text-on-surface-variant'))">
               <CheckCircle2 v-if="server.serverState.value === 'streaming'" class="w-6 h-6" />
@@ -608,6 +594,7 @@ onUnmounted(() => {
 
     <SettingsDialog
       :isOpen="isSettingsOpen"
+      v-model:requireEncryption="server.requireEncryption.value"
       @close="isSettingsOpen = false"
       @updateDevice="dev => server.outputDevice.value = dev"
     />

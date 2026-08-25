@@ -176,6 +176,28 @@
                     class="pointer-events-none block rounded-full shadow-sm ring-0 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)]"
                     :class="notificationsEnabled ? 'h-6 w-6 bg-on-primary' : 'h-4 w-4 bg-on-surface-variant group-hover:h-5 group-hover:w-5'"
                   />
+                 </div>
+              </button>
+            </div>
+
+            <!-- Require Encryption (Wi-Fi clients) -->
+            <div class="bg-surface-bright/60 backdrop-blur-lg rounded-2xl p-4 flex items-center justify-between shadow-sm border border-white/5">
+              <div class="min-w-0 pr-3">
+                <h4 class="font-bold text-on-surface">{{ $t('app.security.requireEncryption') }}</h4>
+                <p class="text-xs text-on-surface-variant">{{ $t('app.security.requireEncryptionDesc') }}</p>
+              </div>
+              <button
+                @click="emit('update:requireEncryption', !props.requireEncryption)"
+                class="group relative inline-flex h-8 w-14 shrink-0 cursor-pointer items-center rounded-full border-2 transition-colors duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 active:scale-95"
+                :class="props.requireEncryption ? 'border-primary bg-primary' : 'border-on-surface-variant bg-transparent hover:bg-on-surface-variant/10'"
+                role="switch"
+                :aria-checked="props.requireEncryption"
+              >
+                <div class="relative flex items-center justify-center transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)]" :class="props.requireEncryption ? 'translate-x-[26px]' : 'translate-x-[4px]'">
+                  <span
+                    class="pointer-events-none block rounded-full shadow-sm ring-0 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)]"
+                    :class="props.requireEncryption ? 'h-6 w-6 bg-on-primary' : 'h-4 w-4 bg-on-surface-variant group-hover:h-5 group-hover:w-5'"
+                  />
                 </div>
               </button>
             </div>
@@ -850,9 +872,10 @@ import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectVa
 
 const props = defineProps<{
   isOpen: boolean
+  requireEncryption: boolean
 }>();
 
-const emit = defineEmits(['close', 'updateDevice']);
+const emit = defineEmits(['close', 'updateDevice', 'update:requireEncryption']);
 
 const { t, locale } = useI18n();
 

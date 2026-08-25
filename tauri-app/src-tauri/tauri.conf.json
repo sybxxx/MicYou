@@ -16,8 +16,9 @@
         "title": "MicYou",
         "width": 800,
         "height": 640,
-        "decorations": false,
-        "resizable": false,
+        "minWidth": 720,
+        "minHeight": 560,
+        "resizable": true,
         "transparent": true,
         "shadow": false,
         "windowEffects": {
