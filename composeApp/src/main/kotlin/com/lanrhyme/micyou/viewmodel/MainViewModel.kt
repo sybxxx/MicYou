@@ -90,6 +90,10 @@ data class AppUiState(
     
     // UDP Warning Dialog State
     val showUdpWarningDialog: Boolean = false,
+
+    // Secure Transport State
+    val isEncrypted: Boolean = false,
+    val pairingPrompt: AudioEngine.PairingPrompt? = null,
     
     // Audio Processing Settings
     val enableNS: Boolean = false,
@@ -269,6 +273,8 @@ class MainViewModel : ViewModel() {
                         showErrorDialog = audioState.showErrorDialog,
                         errorDetails = audioState.errorDetails,
                         showUdpWarningDialog = audioState.showUdpWarningDialog,
+                        isEncrypted = audioState.isEncrypted,
+                        pairingPrompt = audioState.pairingPrompt,
                         enableNS = audioState.enableNS,
                         nsType = audioState.nsType,
                         enableAGC = audioState.enableAGC,
@@ -361,6 +367,7 @@ class MainViewModel : ViewModel() {
     fun dismissErrorDialog() = audioStreamViewModel.dismissErrorDialog()
     fun dismissUdpWarningDialog() = audioStreamViewModel.dismissUdpWarningDialog()
     fun retryAfterError() = audioStreamViewModel.retryAfterError()
+    fun answerPairingPrompt(accepted: Boolean) = audioStreamViewModel.answerPairingPrompt(accepted)
     
     // Settings methods
     fun setThemeMode(mode: ThemeMode) = settingsViewModel.setThemeMode(mode)

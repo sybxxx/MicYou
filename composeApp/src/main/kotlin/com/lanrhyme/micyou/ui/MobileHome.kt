@@ -656,10 +656,17 @@ private fun MainControlCard(
                     if (isRunning) {
                         Surface(
                             shape = MaterialTheme.shapes.extraSmall,
-                            color = statusColor
+                            color = if (state.isEncrypted) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.error
+                            }
                         ) {
                             Text(
-                                "LIVE",
+                                stringResource(
+                                    if (state.isEncrypted) R.string.securityBadgeEncrypted
+                                    else R.string.securityBadgeUnencrypted
+                                ),
                                 style = MaterialTheme.typography.labelSmall,
                                 color = Color.White,
                                 fontWeight = FontWeight.Bold,

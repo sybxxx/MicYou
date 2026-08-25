@@ -29,6 +29,13 @@
     <string name="checkingUpdate">正在检查更新...</string>
     <string name="clearBackgroundImage">清除</string>
     <string name="clickToStart">点击开始</string>
+    <string name="securityBadgeEncrypted">已加密</string>
+    <string name="securityBadgeUnencrypted">未加密</string>
+    <string name="pairingTitle">配对请求</string>
+    <string name="pairingMessage">%1$s 的新设备请求加密连接。请核对此代码与电脑上显示的是否一致。</string>
+    <string name="pairingHint">只有两边代码完全一致才可放行。</string>
+    <string name="pairingApprove">代码一致</string>
+    <string name="pairingDeny">拒绝</string>
     <string name="close">关闭</string>
     <string name="closeActionExit">直接退出</string>
     <string name="closeActionLabel">关闭按钮操作</string>

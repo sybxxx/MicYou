@@ -97,7 +97,11 @@ data class AudioStreamUiState(
     val performanceConfig: PerformanceConfig = PerformanceConfig.DEFAULT,
 
     // Monitoring Panel State
-    val showMonitoringPanel: Boolean = false
+    val showMonitoringPanel: Boolean = false,
+
+    // Secure transport state
+    val isEncrypted: Boolean = false,
+    val pairingPrompt: AudioEngine.PairingPrompt? = null
 )
 
 @OptIn(FlowPreview::class)
@@ -331,6 +335,18 @@ class AudioStreamViewModel : ViewModel() {
             }
         }
 
+        auxiliaryScope.launch {
+            _audioEngine.sessionEncrypted.collect { encrypted ->
+                _uiState.update { it.copy(isEncrypted = encrypted) }
+            }
+        }
+
+        auxiliaryScope.launch {
+            _audioEngine.pairingPrompt.collect { prompt ->
+                _uiState.update { it.copy(pairingPrompt = prompt) }
+            }
+        }
+
         // 监听音频电平数据并更新历史记录
         auxiliaryScope.launch {
             audioLevelData.collect { levelData ->
@@ -401,6 +417,10 @@ class AudioStreamViewModel : ViewModel() {
         auxiliaryScope.launch {
             _audioEngine.setMute(newMuteState)
         }
+    }
+
+    fun answerPairingPrompt(accepted: Boolean) {
+        _audioEngine.answerPairingPrompt(accepted)
     }
 
     fun startStream() {

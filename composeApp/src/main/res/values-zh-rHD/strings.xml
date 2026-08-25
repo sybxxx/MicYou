@@ -29,6 +29,13 @@
     <string name="checkingUpdate">检查更新之中...</string>
     <string name="clearBackgroundImage">清除</string>
     <string name="clickToStart">点击来开始呀</string>
+    <string name="securityBadgeEncrypted">连线已被加密处理项目</string>
+    <string name="securityBadgeUnencrypted">连线未经加密处理项目</string>
+    <string name="pairingTitle">有关配对请求之处理事项</string>
+    <string name="pairingMessage">来自 %1$s 的新装置已提出加密连线的申请。请对该代码与电脑端所显示的代码是否一致进行核对作业。</string>
+    <string name="pairingHint">仅在两边代码完全一致的情况下方可予以放行。</string>
+    <string name="pairingApprove">确认代码一致项</string>
+    <string name="pairingDeny">予以拒绝项</string>
     <string name="close">合起来</string>
     <string name="closeActionExit">出口应用程序项</string>
     <string name="closeActionLabel">关闭按钮动作项项</string>

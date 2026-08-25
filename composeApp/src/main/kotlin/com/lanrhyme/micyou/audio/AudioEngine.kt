@@ -32,6 +32,8 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.withTimeout
+import com.lanrhyme.micyou.settings.SettingsFactory
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
@@ -62,6 +64,13 @@ import com.lanrhyme.micyou.network.ConnectMessage
 import com.lanrhyme.micyou.network.calculateUdpPort
 import com.lanrhyme.micyou.network.MessageWrapper
 import com.lanrhyme.micyou.network.PACKET_MAGIC
+import com.lanrhyme.micyou.network.SECURE_SUITE_V1
+import com.lanrhyme.micyou.network.SessionCrypto
+import com.lanrhyme.micyou.network.UdpCipher
+import com.lanrhyme.micyou.network.SecureChannel
+import com.lanrhyme.micyou.network.SecureClientHello
+import com.lanrhyme.micyou.network.SecureConfirm
+import com.lanrhyme.micyou.network.SecureResult
 import com.lanrhyme.micyou.network.UDP_CUSTOM_HEADER_SIZE
 import com.lanrhyme.micyou.network.UDP_MAX_DATAGRAM_SIZE
 import com.lanrhyme.micyou.network.UDP_PACKET_MAGIC
@@ -395,6 +404,38 @@ class AudioEngine constructor() {
     private val _isMuted = MutableStateFlow(false)
     val isMuted: Flow<Boolean> = _isMuted
 
+    private val _sessionEncrypted = MutableStateFlow(false)
+    val sessionEncrypted: Flow<Boolean> = _sessionEncrypted
+
+    data class PairingPrompt(val sas: String, val peer: String)
+    private val _pairingPrompt = MutableStateFlow<PairingPrompt?>(null)
+    val pairingPrompt: Flow<PairingPrompt?> = _pairingPrompt
+    private var pairingDeferred: CompletableDeferred<Boolean>? = null
+
+    /** Called by the UI once the user compared the SAS codes and decided. */
+    fun answerPairingPrompt(accepted: Boolean) {
+        pairingDeferred?.complete(accepted)
+        _pairingPrompt.value = null
+    }
+
+    // Peers that answered a secure hello without encryption support; retried
+    // as plaintext for the rest of the process lifetime.
+    private val plainOnlyPeers = java.util.Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap<String, Boolean>())
+
+    @Volatile
+    private var activeCrypto: SessionCrypto? = null
+
+    private suspend fun sendSealedFrame(output: ByteWriteChannel, session: SessionCrypto, plain: ByteArray) {
+        val header = SecureChannel.tcpFrameHeader(plain.size + SecureChannel.AEAD_TAG_BYTES)
+        val sealed = session.tcpC2S.seal(plain)
+        output.writeFully(header)
+        output.writeFully(sealed)
+        output.flush()
+    }
+
+    private val secureSettings by lazy { com.lanrhyme.micyou.settings.SettingsFactory.getSettings() }
+
+
     private data class StopResources(
         val sessionJob: Job?,
         val recorder: AudioRecord?,
@@ -717,51 +758,89 @@ class AudioEngine constructor() {
                             sessionUdpSocket = null
                             sessionUdpAddress = null
 
-                            val newSelector = SelectorManager(Dispatchers.IO)
-                            selectorManager = newSelector
-
+                            var newSelector: SelectorManager? = null
                             var newTcpSocket: Socket? = null
                             var newInput: ByteReadChannel? = null
                             var newOutput: ByteWriteChannel? = null
+                            var secureSession: SessionCrypto? = null
 
                             if (transportProtocol == TransportProtocol.Tcp || transportProtocol == TransportProtocol.Both) {
                                 Logger.i("AudioEngine", "Connecting via TCP to $targetIp:$targetPort")
-                                val socketBuilder = aSocket(newSelector)
-                                try {
-                                    newTcpSocket = socketBuilder.tcp().connect(targetIp, targetPort) {
-                                        keepAlive = true
-                                        socketTimeout = 10000L
-                                        noDelay = true
+                                // An old server silently ignores the secure hello, so a
+                                // fallback re-opens a fresh socket and continues plaintext.
+                                var attemptSecure = mode == ConnectionMode.Wifi && targetIp !in plainOnlyPeers
+                                while (true) {
+                                    newSelector = SelectorManager(Dispatchers.IO)
+                                    selectorManager = newSelector
+                                    val socketBuilder = aSocket(newSelector!!)
+                                    try {
+                                        newTcpSocket = socketBuilder.tcp().connect(targetIp, targetPort) {
+                                            keepAlive = true
+                                            socketTimeout = 10000L
+                                            noDelay = true
+                                        }
+                                    } catch (e: Exception) {
+                                        Logger.e("AudioEngine", "TCP connect to $targetIp:$targetPort failed: ${e.message}")
+                                        throw e
                                     }
-                                } catch (e: Exception) {
-                                    Logger.e("AudioEngine", "TCP connect to $targetIp:$targetPort failed: ${e.message}")
-                                    throw e
-                                }
-                                newInput = newTcpSocket.openReadChannel()
-                                newOutput = newTcpSocket.openWriteChannel(autoFlush = true)
+                                    newInput = newTcpSocket.openReadChannel()
+                                    newOutput = newTcpSocket.openWriteChannel(autoFlush = true)
 
-                                Logger.d("AudioEngine", "Starting handshake")
-                                newOutput.writeFully(CHECK_1.encodeToByteArray())
-                                newOutput.flush()
-                                val responseBuffer = ByteArray(CHECK_2.length)
-                                newInput.readFully(responseBuffer, 0, responseBuffer.size)
+                                    Logger.d("AudioEngine", "Starting handshake")
+                                    newOutput.writeFully(CHECK_1.encodeToByteArray())
+                                    newOutput.flush()
+                                    val responseBuffer = ByteArray(CHECK_2.length)
+                                    newInput.readFully(responseBuffer, 0, responseBuffer.size)
 
-                                if (!responseBuffer.decodeToString().equals(CHECK_2)) {
-                                    newTcpSocket.close()
-                                    newSelector.close()
-                                    val msg = getString(R.string.errorHandshakeFailedDetailed)
-                                    Logger.e("AudioEngine", "Handshake failed: received ${responseBuffer.decodeToString()}")
-                                    throw IllegalStateException(msg)
+                                    if (!responseBuffer.decodeToString().equals(CHECK_2)) {
+                                        newTcpSocket.close()
+                                        newSelector.close()
+                                        val msg = getString(R.string.errorHandshakeFailedDetailed)
+                                        Logger.e("AudioEngine", "Handshake failed: received ${responseBuffer.decodeToString()}")
+                                        throw IllegalStateException(msg)
+                                    }
+                                    Logger.i("AudioEngine", "Handshake successful")
+
+                                    val inChannel = newInput
+                                    val outChannel = newOutput
+                                    if (attemptSecure && inChannel != null && outChannel != null) {
+                                        when (val outcome = negotiateSecureTransport(inChannel, outChannel, targetIp)) {
+                                            is SecureNegotiation.Session -> {
+                                                secureSession = outcome.crypto
+                                                activeCrypto = outcome.crypto
+                                                _sessionEncrypted.value = true
+                                                Logger.i("AudioEngine", "Secure transport established with $targetIp")
+                                            }
+                                            is SecureNegotiation.FallBackToPlain -> {
+                                                plainOnlyPeers.add(targetIp)
+                                                runCatching { newTcpSocket?.close() }
+                                                newSelector.close()
+                                                Logger.i("AudioEngine", "Peer $targetIp lacks encryption support; reconnecting in plaintext")
+                                                continue
+                                            }
+                                            is SecureNegotiation.Failure -> {
+                                                runCatching { newTcpSocket?.close() }
+                                                newSelector.close()
+                                                throw java.io.IOException(outcome.message)
+                                            }
+                                        }
+                                    }
+                                    break
                                 }
-                                Logger.i("AudioEngine", "Handshake successful")
+
                                 val connectBytes = proto.encodeToByteArray(
                                     MessageWrapper.serializer(),
                                     MessageWrapper(connect = ConnectMessage(sessionId))
                                 )
-                                newOutput.writeInt(PACKET_MAGIC)
-                                newOutput.writeInt(connectBytes.size)
-                                newOutput.writeFully(connectBytes)
-                                newOutput.flush()
+                                val outChannel = newOutput
+                                if (secureSession != null && outChannel != null) {
+                                    sendSealedFrame(outChannel, secureSession, connectBytes)
+                                } else {
+                                    outChannel?.writeInt(PACKET_MAGIC)
+                                    outChannel?.writeInt(connectBytes.size)
+                                    outChannel?.writeFully(connectBytes)
+                                    outChannel?.flush()
+                                }
                             }
 
                             var newUdpSocket: DatagramSocket? = null
@@ -784,7 +863,7 @@ class AudioEngine constructor() {
                                 if (lifecycleGeneration != sessionGeneration || !desiredRunning) {
                                     try { newTcpSocket?.close() } catch (_: Exception) {}
                                     try { newUdpSocket?.close() } catch (_: Exception) {}
-                                    try { newSelector.close() } catch (_: Exception) {}
+                                    try { newSelector?.close() } catch (_: Exception) {}
                                     throw CancellationException("Audio session superseded during transport setup")
                                 }
                                 tcpSocket = newTcpSocket
@@ -812,15 +891,21 @@ class AudioEngine constructor() {
                                         val localUdpSocket = sessionUdpSocket
                                         val localUdpAddress = sessionUdpAddress
                                         if (shouldUseUdp && localUdpSocket != null && localUdpAddress != null) {
-                                            sessionUdpConsecutiveFailures = sendAudioPacketViaUdp(msg, localUdpSocket, localUdpAddress, sessionUdpConsecutiveFailures)
+                                            sessionUdpConsecutiveFailures = sendAudioPacketViaUdp(msg, localUdpSocket, localUdpAddress, sessionUdpConsecutiveFailures, secureSession?.udp)
                                         } else {
                                             val out = output
                                             if (out != null && !out.isClosedForWrite) {
                                                 val packetBytes = proto.encodeToByteArray(MessageWrapper.serializer(), msg)
-                                                val length = packetBytes.size
-                                                out.writeInt(PACKET_MAGIC)
-                                                out.writeInt(length)
-                                                out.writeFully(packetBytes)
+                                                val cipher = secureSession?.tcpC2S
+                                                if (cipher != null) {
+                                                    val sealed = cipher.seal(packetBytes)
+                                                    out.writeFully(SecureChannel.tcpFrameHeader(sealed.size))
+                                                    out.writeFully(sealed)
+                                                } else {
+                                                    out.writeInt(PACKET_MAGIC)
+                                                    out.writeInt(packetBytes.size)
+                                                    out.writeFully(packetBytes)
+                                                }
                                                 out.flush()
                                             }
                                         }
@@ -838,9 +923,19 @@ class AudioEngine constructor() {
                                     val inChannel = input ?: return@launch
                                     Logger.d("AudioEngine", "Reader loop started")
                                     try {
-                                        while (isActive) {
-                                            val magic = try {
-                                                inChannel.readInt()
+                                    while (isActive) {
+                                            val header = ByteArray(8)
+                                            val magic: Int
+                                            val length: Int
+                                            try {
+                                                if (secureSession != null) {
+                                                    inChannel.readFully(header)
+                                                    magic = SecureChannel.readI32Be(header, 0)
+                                                    length = SecureChannel.readI32Be(header, 4)
+                                                } else {
+                                                    magic = inChannel.readInt()
+                                                    length = inChannel.readInt()
+                                                }
                                             } catch (e: Exception) {
                                                 if (isActive && _state.value == StreamState.Streaming && !isNormalDisconnect(e)) {
                                                     Logger.d("AudioEngine", "Reader loop: socket closed or EOF: ${e.message}")
@@ -852,13 +947,13 @@ class AudioEngine constructor() {
                                                 Logger.w("AudioEngine", "Invalid Magic: ${magic.toString(16)}")
                                                 throw java.io.IOException("Invalid Packet Magic")
                                             }
-                                            val length = inChannel.readInt()
 
                                             if (length > 0) {
                                                 val packetBytes = ByteArray(length)
                                                 inChannel.readFully(packetBytes)
                                                 try {
-                                                    val wrapper = proto.decodeFromByteArray(MessageWrapper.serializer(), packetBytes)
+                                                    val plainBytes = secureSession?.tcpS2C?.open(header, packetBytes) ?: packetBytes
+                                                    val wrapper = proto.decodeFromByteArray(MessageWrapper.serializer(), plainBytes)
                                                     if (wrapper.mute != null) {
                                                         _isMuted.value = wrapper.mute.isMuted
                                                         Logger.i("AudioEngine", "Received Mute Command: ${wrapper.mute.isMuted}")
@@ -1085,7 +1180,7 @@ class AudioEngine constructor() {
                                     val localUdpSocket = sessionUdpSocket
                                     val localUdpAddress = sessionUdpAddress
                                     if (localUdpSocket != null && localUdpAddress != null) {
-                                        sessionUdpConsecutiveFailures = sendAudioPacketViaUdp(wrapper, localUdpSocket, localUdpAddress, sessionUdpConsecutiveFailures)
+                                        sessionUdpConsecutiveFailures = sendAudioPacketViaUdp(wrapper, localUdpSocket, localUdpAddress, sessionUdpConsecutiveFailures, activeCrypto?.udp)
 
                                         // FEC: 收集音频 buffer，满一组后生成 FEC 包
                                         fecGroupBuffer.add(audioData)
@@ -1108,7 +1203,7 @@ class AudioEngine constructor() {
                                                     fecPacketLengths = fecGroupBuffer.map { it.size }
                                                 )
                                             )
-                                            sessionUdpConsecutiveFailures = sendAudioPacketViaUdp(fecWrapper, localUdpSocket, localUdpAddress, sessionUdpConsecutiveFailures)
+                                            sessionUdpConsecutiveFailures = sendAudioPacketViaUdp(fecWrapper, localUdpSocket, localUdpAddress, sessionUdpConsecutiveFailures, activeCrypto?.udp)
                                             fecGroupBuffer = mutableListOf()
                                             fecGroupStartSeq = sequenceNumber
                                         }
@@ -1195,7 +1290,7 @@ class AudioEngine constructor() {
                             if (automaticGainControl === sessionAutomaticGainControl) automaticGainControl = null
                             if (job === sessionJobIdentity) job = null
                             if (lifecycleGeneration == sessionGeneration) {
-                                if (_state.value != StreamState.Error) _state.value = StreamState.Idle
+                                if (_state.value != StreamState.Error) { _state.value = StreamState.Idle; _sessionEncrypted.value = false; activeCrypto = null }
                             }
                         }
 
@@ -1270,32 +1365,178 @@ class AudioEngine constructor() {
         return result
     }
 
+    private sealed class SecureNegotiation {
+        data class Session(val crypto: SessionCrypto) : SecureNegotiation()
+        object FallBackToPlain : SecureNegotiation()
+        data class Failure(val message: String) : SecureNegotiation()
+    }
+
+    /**
+     * Runs the client half of the encrypted handshake over an open control
+     * channel. Returns [SecureNegotiation.FallBackToPlain] when the peer turns
+     * out to be a legacy server, and [SecureNegotiation.Failure] for anything
+     * that must not silently downgrade (bad signature, user refusal).
+     */
+    @OptIn(ExperimentalSerializationApi::class)
+    private suspend fun negotiateSecureTransport(
+        input: ByteReadChannel,
+        output: ByteWriteChannel,
+        peer: String
+    ): SecureNegotiation = try {
+        val seed = SecureChannel.obtainIdentitySeed(secureSettings)
+        val identityPub = SecureChannel.identityPublicKey(seed)
+        val ephPrivate = SecureChannel.generateX25519PrivateKey()
+        val ephPub = SecureChannel.x25519PublicKey(ephPrivate)
+
+        var hello = SecureClientHello(
+            suiteMask = SECURE_SUITE_V1,
+            ephemeralPubKey = ephPub,
+            identityPubKey = identityPub,
+            deviceName = android.os.Build.MODEL ?: "Android"
+        )
+        hello = hello.copy(
+            transcriptSignature = SecureChannel.sign(
+                seed,
+                SecureChannel.signedTranscript(SecureChannel.clientHelloCore(hello))
+            )
+        )
+        val helloBody = proto.encodeToByteArray(
+            MessageWrapper.serializer(),
+            MessageWrapper(secureClientHello = hello)
+        )
+        output.writeFully(SecureChannel.tcpFrameHeader(helloBody.size))
+        output.writeFully(helloBody)
+        output.flush()
+
+        val header = ByteArray(8)
+        input.readFully(header)
+        if (SecureChannel.readI32Be(header, 0) != PACKET_MAGIC) {
+            return SecureNegotiation.FallBackToPlain
+        }
+        val replyLength = SecureChannel.readI32Be(header, 4)
+        if (replyLength <= 0 || replyLength > 1 shl 20) {
+            return SecureNegotiation.FallBackToPlain
+        }
+        val replyBytes = ByteArray(replyLength)
+        input.readFully(replyBytes)
+        val serverHello = proto.decodeFromByteArray(MessageWrapper.serializer(), replyBytes)
+            .secureServerHello
+            ?: return SecureNegotiation.FallBackToPlain
+
+        // A legacy-capable server signals "plaintext only" with suite 0.
+        if (serverHello.suite == 0) return SecureNegotiation.FallBackToPlain
+
+        val chCore = SecureChannel.clientHelloCore(hello)
+        val shCore = SecureChannel.serverHelloCore(
+            serverHello.suite,
+            serverHello.identityPubKey,
+            serverHello.ephemeralPubKey
+        )
+        if (!SecureChannel.verify(
+                serverHello.identityPubKey,
+                SecureChannel.signedTranscript(chCore, shCore),
+                serverHello.transcriptSignature
+            )
+        ) {
+            return SecureNegotiation.Failure("server transcript signature invalid")
+        }
+
+        val shared = SecureChannel.x25519SharedSecret(ephPrivate, serverHello.ephemeralPubKey)
+        val transcript = SecureChannel.transcriptHash(chCore, shCore)
+        val secrets = SecureChannel.deriveHandshakeSecrets(transcript, shared)
+
+        val knownServer = SecureChannel.pairedServerDisplayName(secureSettings, serverHello.identityPubKey) != null
+        if (!knownServer) {
+            val sas = SecureChannel.sasText(secrets.sasValue)
+            Logger.i("AudioEngine", "First secure contact with $peer; SAS $sas")
+            _pairingPrompt.value = PairingPrompt(sas = sas, peer = peer)
+            pairingDeferred = CompletableDeferred()
+            val accepted = try {
+                withTimeout(120_000L) { pairingDeferred?.await() ?: false }
+            } catch (_: Exception) {
+                false
+            } finally {
+                _pairingPrompt.value = null
+                pairingDeferred = null
+            }
+            if (!accepted) {
+                return SecureNegotiation.Failure("pairing rejected by user")
+            }
+            SecureChannel.rememberPairedServer(secureSettings, serverHello.identityPubKey, peer)
+        }
+
+        val session = SecureChannel.sessionCrypto(secrets.keys)
+
+        val confirm = MessageWrapper(
+            secureConfirm = SecureConfirm(deviceName = hello.deviceName)
+        )
+        val confirmBytes = proto.encodeToByteArray(MessageWrapper.serializer(), confirm)
+        val confirmHeader = SecureChannel.tcpFrameHeader(confirmBytes.size + SecureChannel.AEAD_TAG_BYTES)
+        val sealedConfirm = session.tcpC2S.seal(confirmBytes)
+        output.writeFully(confirmHeader)
+        output.writeFully(sealedConfirm)
+        output.flush()
+
+        val verdictHeader = ByteArray(8)
+        input.readFully(verdictHeader)
+        if (SecureChannel.readI32Be(verdictHeader, 0) != PACKET_MAGIC) {
+            return SecureNegotiation.Failure("invalid verdict frame magic")
+        }
+        val verdictLength = SecureChannel.readI32Be(verdictHeader, 4)
+        val verdictBytes = ByteArray(verdictLength)
+        input.readFully(verdictBytes)
+        val opened = session.tcpS2C.open(verdictHeader, verdictBytes)
+        val accepted = proto.decodeFromByteArray(MessageWrapper.serializer(), opened)
+            .secureResult?.accepted ?: false
+        if (!accepted) {
+            return SecureNegotiation.Failure("server rejected the secure session")
+        }
+        SecureNegotiation.Session(session)
+    } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        // Anything else (EOF/garbage/timeout) means the peer predates the
+        // encrypted transport; retrying in plaintext is safe because the
+        // fallback only happens before any audio or identity material flowed.
+        Logger.w("AudioEngine", "Secure negotiation unavailable (${e.message}); falling back to plaintext")
+        SecureNegotiation.FallBackToPlain
+    }
+
     @OptIn(ExperimentalSerializationApi::class)
     private fun sendAudioPacketViaUdp(
         wrapper: MessageWrapper,
         socket: DatagramSocket,
         serverAddress: InetSocketAddress,
-        consecutiveFailures: Int
+        consecutiveFailures: Int,
+        udpCipher: UdpCipher?
     ): Int {
         return try {
             val packetBytes = proto.encodeToByteArray(MessageWrapper.serializer(), wrapper)
-            val length = packetBytes.size
-            require(UDP_CUSTOM_HEADER_SIZE + length <= UDP_MAX_DATAGRAM_SIZE) {
-                "UDP datagram exceeds $UDP_MAX_DATAGRAM_SIZE bytes: ${UDP_CUSTOM_HEADER_SIZE + length}"
+            val datagramBytes = if (udpCipher != null) {
+                // Sealed datagrams carry their own magic + sequence prefix.
+                udpCipher.seal(packetBytes)
+            } else {
+                require(UDP_CUSTOM_HEADER_SIZE + packetBytes.size <= UDP_MAX_DATAGRAM_SIZE) {
+                    "UDP datagram exceeds $UDP_MAX_DATAGRAM_SIZE bytes: ${UDP_CUSTOM_HEADER_SIZE + packetBytes.size}"
+                }
+                val header = ByteArray(UDP_CUSTOM_HEADER_SIZE).apply {
+                    this[0] = (UDP_PACKET_MAGIC shr 24).toByte()
+                    this[1] = (UDP_PACKET_MAGIC shr 16).toByte()
+                    this[2] = (UDP_PACKET_MAGIC shr 8).toByte()
+                    this[3] = UDP_PACKET_MAGIC.toByte()
+                    this[4] = (packetBytes.size shr 24).toByte()
+                    this[5] = (packetBytes.size shr 16).toByte()
+                    this[6] = (packetBytes.size shr 8).toByte()
+                    this[7] = packetBytes.size.toByte()
+                }
+                header + packetBytes
             }
-            val header = ByteArray(UDP_CUSTOM_HEADER_SIZE).apply {
-                this[0] = (UDP_PACKET_MAGIC shr 24).toByte()
-                this[1] = (UDP_PACKET_MAGIC shr 16).toByte()
-                this[2] = (UDP_PACKET_MAGIC shr 8).toByte()
-                this[3] = UDP_PACKET_MAGIC.toByte()
-                this[4] = (length shr 24).toByte()
-                this[5] = (length shr 16).toByte()
-                this[6] = (length shr 8).toByte()
-                this[7] = length.toByte()
+            require(datagramBytes.size <= UDP_MAX_DATAGRAM_SIZE) {
+                "UDP datagram exceeds $UDP_MAX_DATAGRAM_SIZE bytes: ${datagramBytes.size}"
             }
             val udpPacket = DatagramPacket(
-                header + packetBytes,
-                UDP_CUSTOM_HEADER_SIZE + length,
+                datagramBytes,
+                datagramBytes.size,
                 serverAddress
             )
             socket.send(udpPacket)
@@ -1540,6 +1781,8 @@ class AudioEngine constructor() {
             }
             if (userInitiated || !desiredRunning) {
                 _state.value = StreamState.Idle
+                _sessionEncrypted.value = false
+                activeCrypto = null
             }
         }
         if (userInitiated && resources?.sessionJob != null && resources.recorder != null &&

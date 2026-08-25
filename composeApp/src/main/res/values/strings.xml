@@ -36,6 +36,13 @@
     <string name="checkingUpdate">Checking for updates...</string>
     <string name="clearBackgroundImage">Clear</string>
     <string name="clickToStart">Click to Start</string>
+    <string name="securityBadgeEncrypted">ENCRYPTED</string>
+    <string name="securityBadgeUnencrypted">UNENCRYPTED</string>
+    <string name="pairingTitle">Pairing Request</string>
+    <string name="pairingMessage">New device at %1$s wants to connect with encryption. Compare this code with the one shown on the PC.</string>
+    <string name="pairingHint">Approve only if both codes match exactly.</string>
+    <string name="pairingApprove">Codes match</string>
+    <string name="pairingDeny">Deny</string>
     <string name="close">Close</string>
     <string name="closeActionExit">Exit Application</string>
     <string name="closeActionLabel">Close Button Action</string>

@@ -29,6 +29,13 @@
     <string name="checkingUpdate">檢查更新緊...</string>
     <string name="clearBackgroundImage">清除</string>
     <string name="clickToStart">㩒呢度開始</string>
+    <string name="securityBadgeEncrypted">已加密</string>
+    <string name="securityBadgeUnencrypted">未加密</string>
+    <string name="pairingTitle">連線配對請求</string>
+    <string name="pairingMessage">%1$s 嘅新裝置要求加密連線。請核對呢個代碼同電腦上顯示嘅係咪一致。</string>
+    <string name="pairingHint">兩邊代碼完全一致先可以放行。</string>
+    <string name="pairingApprove">代碼一致</string>
+    <string name="pairingDeny">拒絕</string>
     <string name="close">關閉</string>
     <string name="closeActionExit">直接離開</string>
     <string name="closeActionLabel">撳關閉掣嘅動作</string>
