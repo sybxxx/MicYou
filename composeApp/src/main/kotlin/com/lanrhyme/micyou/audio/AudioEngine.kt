@@ -1408,8 +1408,17 @@ class AudioEngine constructor() {
         output.writeFully(helloBody)
         output.flush()
 
-        val header = ByteArray(8)
-        input.readFully(header)
+        // Only this read may legitimately hit a legacy server: it either never
+        // answers the unknown message or closes the socket. Every later error is
+        // a real failure and must NOT permanently downgrade the peer.
+        val header = try {
+            val header = ByteArray(8)
+            input.readFully(header)
+            header
+        } catch (e: Exception) {
+            Logger.w("AudioEngine", "No secure reply from $peer (${e.message}); treating as legacy server")
+            return SecureNegotiation.FallBackToPlain
+        }
         if (SecureChannel.readI32Be(header, 0) != PACKET_MAGIC) {
             return SecureNegotiation.FallBackToPlain
         }
@@ -1452,7 +1461,7 @@ class AudioEngine constructor() {
             _pairingPrompt.value = PairingPrompt(sas = sas, peer = peer)
             pairingDeferred = CompletableDeferred()
             val accepted = try {
-                withTimeout(120_000L) { pairingDeferred?.await() ?: false }
+                withTimeout(180_000L) { pairingDeferred?.await() ?: false }
             } catch (_: Exception) {
                 false
             } finally {
@@ -1495,11 +1504,11 @@ class AudioEngine constructor() {
     } catch (e: kotlinx.coroutines.CancellationException) {
         throw e
     } catch (e: Exception) {
-        // Anything else (EOF/garbage/timeout) means the peer predates the
-        // encrypted transport; retrying in plaintext is safe because the
-        // fallback only happens before any audio or identity material flowed.
-        Logger.w("AudioEngine", "Secure negotiation unavailable (${e.message}); falling back to plaintext")
-        SecureNegotiation.FallBackToPlain
+        // Past the hello phase the peer has proven it speaks the secure
+        // protocol, so transport errors here must surface instead of
+        // permanently downgrading the peer to plaintext.
+        Logger.e("AudioEngine", "Secure negotiation failed: ${e.message}")
+        SecureNegotiation.Failure(e.message ?: "secure handshake failed")
     }
 
     @OptIn(ExperimentalSerializationApi::class)

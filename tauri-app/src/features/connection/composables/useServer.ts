@@ -131,7 +131,7 @@ export function useServer(options?: { audioLevel?: Ref<number>; isMuted?: Ref<bo
   // Encrypted transport: queued pairing requests (oldest shown first) and the
   // security state of the current client session
   const pairingQueue = ref<PairingRequest[]>([]);
-  const currentPairingRequest = computed(() => pairingQueue.value[0] ?? null);
+  const currentPairingRequest = computed(() => pairingQueue.value[pairingQueue.value.length - 1] ?? null);
   const sessionUnencrypted = ref(false);
 
   // Computes the display representation of the active bind IP address
@@ -456,7 +456,9 @@ export function useServer(options?: { audioLevel?: Ref<number>; isMuted?: Ref<bo
    * Approves or denies the oldest pending pairing request and advances the queue
    */
   const resolvePairing = async (accept: boolean) => {
-    const request = pairingQueue.value.shift();
+    // The dialog displays the newest request: that is the connection the phone
+    // is actually waiting on; older entries are stale retries.
+    const request = pairingQueue.value.pop();
     if (!request) return;
     try {
       await invoke('resolve_pairing', { requestId: request.requestId, accept });

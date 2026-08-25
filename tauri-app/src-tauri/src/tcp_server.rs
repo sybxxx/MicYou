@@ -29,7 +29,7 @@ const FRAME_HEADER_LEN: usize = 8;
 // control-message headroom while bounding allocations from an untrusted peer.
 const MAX_CONTROL_PAYLOAD_LEN: usize = 1024 * 1024;
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
-const PAIRING_TIMEOUT: Duration = Duration::from_secs(60);
+const PAIRING_TIMEOUT: Duration = Duration::from_secs(180);
 const MAX_CONCURRENT_CLIENTS: usize = 64;
 const FRAME_READ_TIMEOUT: Duration = Duration::from_secs(10);
 const FRAME_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -396,10 +396,14 @@ async fn establish_secure_session(
     if !client_known {
         let request_id = format!("conn-{connection_id}");
         let verdict = match broker.begin(&request_id, &claimed_name, &sas, events) {
-            Some(rx) => tokio::select! {
-                _ = cancel_token.cancelled() => false,
-                result = timeout(PAIRING_TIMEOUT, rx) => matches!(result, Ok(Ok(true))),
-            },
+            Some((rx, guard)) => {
+                let answer = tokio::select! {
+                    _ = cancel_token.cancelled() => false,
+                    result = timeout(PAIRING_TIMEOUT, rx) => matches!(result, Ok(Ok(true))),
+                };
+                drop(guard);
+                answer
+            }
             None => true,
         };
         if !verdict {
