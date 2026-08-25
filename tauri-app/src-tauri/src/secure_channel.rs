@@ -16,16 +16,25 @@ use crate::security::{PairedDeviceStore, ServerIdentity};
 
 const KEYS_INFO: &[u8] = b"MICYOU-KEYS-V1";
 const SAS_INFO: &[u8] = b"MICYOU-SAS-V1";
+pub const AEAD_TAG_LEN: usize = 16;
 const MASTER_SECRET_LEN: usize = 104;
 const SYMMETRIC_KEY_LEN: usize = 32;
 const UDP_NONCE_PREFIX_LEN: usize = 4;
-const AEAD_TAG_LEN: usize = 16;
 const X25519_KEY_LEN: usize = 32;
 const ED25519_PUBLIC_KEY_LEN: usize = 32;
 const UDP_HEADER_LEN: usize = 4 + 8;
 const UDP_REPLAY_WINDOW: u64 = 2048;
 const UDP_REPLAY_WORDS: usize = (UDP_REPLAY_WINDOW / 64) as usize;
 const SAS_MODULUS: u64 = 1_000_000;
+
+/// Per-server security material: long-lived identity, paired-device store and
+/// the policy flag rejecting legacy plaintext clients.
+pub struct ServerSecurity {
+    pub handshake: SecureHandshake,
+    pub require_encryption: bool,
+}
+
+pub type SharedSecurity = Arc<ServerSecurity>;
 
 /// Every failure mode of the secure channel; none of them may panic on untrusted input.
 #[derive(Debug)]
@@ -63,7 +72,7 @@ pub enum Direction {
     ServerToClient,
 }
 
-fn signed_transcript(parts: &[&[u8]]) -> Vec<u8> {
+pub(crate) fn signed_transcript(parts: &[&[u8]]) -> Vec<u8> {
     let mut input = SECURE_TRANSCRIPT_TAG.to_vec();
     for part in parts {
         input.extend_from_slice(&(part.len() as u32).to_be_bytes());
@@ -75,7 +84,7 @@ fn signed_transcript(parts: &[&[u8]]) -> Vec<u8> {
 /// Canonical client-hello value string built from decoded fields only, never
 /// from protobuf re-encoding: two independent protobuf implementations may
 /// serialize differently, so signatures and keys must not depend on encoding.
-fn client_hello_core(hello: &SecureClientHello) -> Vec<u8> {
+pub(crate) fn client_hello_core(hello: &SecureClientHello) -> Vec<u8> {
     signed_transcript(&[
         &hello.suite_mask.to_be_bytes(),
         &hello.ephemeral_pub_key,
@@ -86,12 +95,12 @@ fn client_hello_core(hello: &SecureClientHello) -> Vec<u8> {
 }
 
 /// Canonical server-hello value string (signature field excluded by design).
-fn server_hello_core(suite: u32, identity_pub: &[u8], ephemeral_pub: &[u8]) -> Vec<u8> {
+pub(crate) fn server_hello_core(suite: u32, identity_pub: &[u8], ephemeral_pub: &[u8]) -> Vec<u8> {
     signed_transcript(&[&suite.to_be_bytes(), identity_pub, ephemeral_pub])[SECURE_TRANSCRIPT_TAG.len()..]
         .to_vec()
 }
 
-fn transcript_digest(ch_core: &[u8], sh_core: &[u8]) -> Vec<u8> {
+pub(crate) fn transcript_digest(ch_core: &[u8], sh_core: &[u8]) -> Vec<u8> {
     digest::digest(&digest::SHA256, &signed_transcript(&[ch_core, sh_core])).as_ref().to_vec()
 }
 
@@ -112,14 +121,14 @@ impl hkdf::KeyType for FixedLen {
 }
 
 #[derive(Debug, Clone)]
-struct SessionKeys {
-    tcp_key_c2s: [u8; SYMMETRIC_KEY_LEN],
-    tcp_key_s2c: [u8; SYMMETRIC_KEY_LEN],
-    udp_key_c2s: [u8; SYMMETRIC_KEY_LEN],
-    udp_nonce_prefix: [u8; UDP_NONCE_PREFIX_LEN],
+pub(crate) struct SessionKeys {
+    pub(crate) tcp_key_c2s: [u8; SYMMETRIC_KEY_LEN],
+    pub(crate) tcp_key_s2c: [u8; SYMMETRIC_KEY_LEN],
+    pub(crate) udp_key_c2s: [u8; SYMMETRIC_KEY_LEN],
+    pub(crate) udp_nonce_prefix: [u8; UDP_NONCE_PREFIX_LEN],
 }
 
-fn derive_session_keys(
+pub(crate) fn derive_session_keys(
     transcript: &[u8],
     shared_secret: &[u8],
 ) -> Result<(SessionKeys, u64), SecureError> {
@@ -372,16 +381,21 @@ impl UdpSealer {
 pub struct SessionCrypto {
     tcp_cipher_c2s: TcpCipher,
     tcp_cipher_s2c: TcpCipher,
-    udp: UdpSealer,
+    udp: Arc<UdpSealer>,
 }
 
 impl SessionCrypto {
-    fn new(keys: &SessionKeys) -> Result<Self, SecureError> {
+    pub(crate) fn new(keys: &SessionKeys) -> Result<Self, SecureError> {
         Ok(Self {
             tcp_cipher_c2s: TcpCipher::new(&keys.tcp_key_c2s)?,
             tcp_cipher_s2c: TcpCipher::new(&keys.tcp_key_s2c)?,
-            udp: UdpSealer::new(&keys.udp_key_c2s, &keys.udp_nonce_prefix)?,
+            udp: Arc::new(UdpSealer::new(&keys.udp_key_c2s, &keys.udp_nonce_prefix)?),
         })
+    }
+
+    /// Handle for the UDP receive path; shares replay/sequence state with TCP-free clone.
+    pub fn udp_handle(&self) -> Arc<UdpSealer> {
+        Arc::clone(&self.udp)
     }
 
     /// Seal one TCP frame payload. `header8` must be the exact 8-byte frame
@@ -414,6 +428,21 @@ impl SessionCrypto {
 
     pub fn udp_sealer(&self) -> &UdpSealer {
         &self.udp
+    }
+}
+
+impl SecureHandshake {
+    /// Persist a freshly approved client identity so future sessions skip pairing.
+    pub fn remember_client(&self, identity_b64: &str, device_name: &str) -> Result<(), String> {
+        let store = self.paired_devices.as_ref().ok_or_else(|| {
+            "paired-device store unavailable".to_string()
+        })?;
+        let mut guard = store.lock().map_err(|_| "paired-device store poisoned".to_string())?;
+        guard.upsert(device_name, identity_b64)
+    }
+
+    pub fn paired_devices_enabled(&self) -> bool {
+        self.paired_devices.is_some()
     }
 }
 

@@ -83,6 +83,7 @@ pub fn build_state() -> Arc<ServerState> {
         dsp_settings: Arc::new(std::sync::RwLock::new(settings)),
         is_monitoring: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         spectrum_streaming_enabled: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        pairing_broker: Arc::new(tauri_app_lib::pairing::PairingBroker::new(true)),
         ..ServerState::default()
     })
 }
