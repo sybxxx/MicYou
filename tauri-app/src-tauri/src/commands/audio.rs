@@ -127,6 +127,10 @@ pub async fn set_mute_state(
         plugin_sync: None,
         ping: None,
         pong: None,
+        secure_client_hello: None,
+        secure_server_hello: None,
+        secure_confirm: None,
+        secure_result: None,
     };
 
     let tx = {

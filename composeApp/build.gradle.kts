@@ -115,6 +115,7 @@ dependencies {
     implementation(libs.filekit.core)
     implementation(libs.filekit.dialogs.compose)
     implementation(libs.materialKolor)
+    implementation(libs.tink.android)
 
     testImplementation(libs.kotlin.test.junit)
 

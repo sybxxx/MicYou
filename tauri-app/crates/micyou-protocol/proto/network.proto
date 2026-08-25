@@ -9,6 +9,40 @@ message MessageWrapper {
     PluginSyncMessage pluginSync = 4;         // Plugin sync state
     PingMessage ping = 5;                     // Ping for latency
     PongMessage pong = 6;                     // Pong for latency
+    SecureClientHello secureClientHello = 7;  // Encrypted-mode handshake, client -> server
+    SecureServerHello secureServerHello = 8;  // Encrypted-mode handshake, server -> client
+    SecureConfirm secureConfirm = 9;          // Encrypted-mode handshake completion, client -> server
+    SecureResult secureResult = 10;           // Pairing/handshake verdict, server -> client
+}
+
+// Suite value shared by all secure-handshake messages. Suite 1 is X25519 ECDH +
+// Ed25519 identity signatures + HKDF-SHA256 + AES-256-GCM.
+message SecureClientHello {
+    // Bitmask of supported suites; bit N set means suite N+1 is supported.
+    uint32 suiteMask = 1;
+    bytes ephemeralPubKey = 2;
+    bytes identityPubKey = 3;
+    // Ed25519 signature over the canonical client-hello byte string defined by
+    // SECURE_TRANSCRIPT_TAG conventions; never included in that string itself.
+    bytes transcriptSignature = 4;
+    string deviceName = 5;
+}
+
+message SecureServerHello {
+    uint32 suite = 1; // 0 means "encryption unavailable, fall back to plaintext"
+    bytes identityPubKey = 2;
+    bytes ephemeralPubKey = 3;
+    // Ed25519 signature over both encoded hellos (client hello including its
+    // signature, server hello with this field empty), prefixed by the tag.
+    bytes transcriptSignature = 4;
+}
+
+message SecureConfirm {
+    string deviceName = 1;
+}
+
+message SecureResult {
+    bool accepted = 1;
 }
 
 message ConnectMessage {

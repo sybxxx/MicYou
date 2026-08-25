@@ -666,6 +666,10 @@ async fn handle_client(
                     ),
                 }),
                 pong: None,
+                secure_client_hello: None,
+                secure_server_hello: None,
+                secure_confirm: None,
+                secure_result: None,
             };
             if tx_ping.send(ping_msg).await.is_err() {
                 break;
@@ -828,6 +832,10 @@ async fn handle_message(
             pong: Some(micyou_protocol::micyou::PongMessage {
                 timestamp: ping.timestamp,
             }),
+            secure_client_hello: None,
+            secure_server_hello: None,
+            secure_confirm: None,
+            secure_result: None,
         };
         let permit = tokio::select! {
             biased;

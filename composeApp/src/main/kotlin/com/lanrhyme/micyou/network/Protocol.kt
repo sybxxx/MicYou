@@ -121,8 +121,102 @@ data class PongMessage(
     val timestamp: Long
 )
 
+@OptIn(ExperimentalSerializationApi::class)
+@Serializable
+data class SecureClientHello(
+    // Bitmask of supported suites; bit N set means suite N+1 is supported.
+    @ProtoNumber(1)
+    val suiteMask: Int = 0,
+    @ProtoNumber(2)
+    val ephemeralPubKey: ByteArray = ByteArray(0),
+    @ProtoNumber(3)
+    val identityPubKey: ByteArray = ByteArray(0),
+    @ProtoNumber(4)
+    val transcriptSignature: ByteArray = ByteArray(0),
+    @ProtoNumber(5)
+    val deviceName: String = ""
+) {
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other == null || this::class != other::class) return false
+
+        other as SecureClientHello
+
+        if (suiteMask != other.suiteMask) return false
+        if (!ephemeralPubKey.contentEquals(other.ephemeralPubKey)) return false
+        if (!identityPubKey.contentEquals(other.identityPubKey)) return false
+        if (!transcriptSignature.contentEquals(other.transcriptSignature)) return false
+        if (deviceName != other.deviceName) return false
+
+        return true
+    }
+
+    override fun hashCode(): Int {
+        var result = suiteMask
+        result = 31 * result + ephemeralPubKey.contentHashCode()
+        result = 31 * result + identityPubKey.contentHashCode()
+        result = 31 * result + transcriptSignature.contentHashCode()
+        result = 31 * result + deviceName.hashCode()
+        return result
+    }
+}
+
+@OptIn(ExperimentalSerializationApi::class)
+@Serializable
+data class SecureServerHello(
+    @ProtoNumber(1)
+    val suite: Int = 0,
+    @ProtoNumber(2)
+    val identityPubKey: ByteArray = ByteArray(0),
+    @ProtoNumber(3)
+    val ephemeralPubKey: ByteArray = ByteArray(0),
+    @ProtoNumber(4)
+    val transcriptSignature: ByteArray = ByteArray(0)
+) {
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other == null || this::class != other::class) return false
+
+        other as SecureServerHello
+
+        if (suite != other.suite) return false
+        if (!identityPubKey.contentEquals(other.identityPubKey)) return false
+        if (!ephemeralPubKey.contentEquals(other.ephemeralPubKey)) return false
+        if (!transcriptSignature.contentEquals(other.transcriptSignature)) return false
+
+        return true
+    }
+
+    override fun hashCode(): Int {
+        var result = suite
+        result = 31 * result + identityPubKey.contentHashCode()
+        result = 31 * result + ephemeralPubKey.contentHashCode()
+        result = 31 * result + transcriptSignature.contentHashCode()
+        return result
+    }
+}
+
+@OptIn(ExperimentalSerializationApi::class)
+@Serializable
+data class SecureConfirm(
+    @ProtoNumber(1)
+    val deviceName: String = ""
+)
+
+@OptIn(ExperimentalSerializationApi::class)
+@Serializable
+data class SecureResult(
+    @ProtoNumber(1)
+    val accepted: Boolean = false
+)
+
 const val PACKET_MAGIC = 0x4D696359 // "MicY" in ASCII
 const val UDP_PACKET_MAGIC = 0x4D696355 // "MicU" in ASCII
+// "MicV" in ASCII, marks AEAD-sealed audio datagrams (secure UDP transport).
+const val UDP_SECURE_MAGIC = 0x4D696356
+// Suite 1: X25519 ECDH + Ed25519 identity signatures + HKDF-SHA256 + AES-256-GCM.
+const val SECURE_SUITE_V1 = 1
+val SECURE_TRANSCRIPT_TAG: ByteArray = "MICYOU-SECURE-V1".toByteArray()
 const val UDP_CUSTOM_HEADER_SIZE = 8
 const val UDP_MAX_DATAGRAM_SIZE = 1472
 // 为自定义头、嵌套 protobuf、64 位字段及 FEC 长度元数据预留最坏情况预算。
@@ -164,5 +258,13 @@ data class MessageWrapper(
     @ProtoNumber(5)
     val ping: PingMessage? = null,
     @ProtoNumber(6)
-    val pong: PongMessage? = null
+    val pong: PongMessage? = null,
+    @ProtoNumber(7)
+    val secureClientHello: SecureClientHello? = null,
+    @ProtoNumber(8)
+    val secureServerHello: SecureServerHello? = null,
+    @ProtoNumber(9)
+    val secureConfirm: SecureConfirm? = null,
+    @ProtoNumber(10)
+    val secureResult: SecureResult? = null
 )

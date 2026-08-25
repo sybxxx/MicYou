@@ -3266,6 +3266,7 @@ name = "micyou-app"
 version = "2.0.0-alpha4"
 dependencies = [
  "axum",
+ "base64 0.22.1",
  "bytes",
  "cpal",
  "hostname",
@@ -3280,6 +3281,7 @@ dependencies = [
  "prost",
  "rcgen",
  "reqwest",
+ "ring",
  "rustls",
  "rustls-pemfile",
  "serde",

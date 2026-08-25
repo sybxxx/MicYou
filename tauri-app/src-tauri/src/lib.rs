@@ -12,6 +12,8 @@ pub mod mode_lock;
 pub mod network;
 #[cfg(target_os = "linux")]
 pub mod pipewire;
+pub mod secure_channel;
+pub mod security;
 pub mod server;
 pub mod stats;
 pub mod tcp_server;
