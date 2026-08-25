@@ -9,7 +9,7 @@ import { useI18n } from 'vue-i18n';
 import { 
   Mic, Wifi, RadioTower, Globe, ChevronDown, CheckCircle2, Settings, 
   Link, Unlink, RefreshCw, ActivitySquare as MonitoringIcon, X, Minus, 
-  VolumeX, Volume2, Headphones, QrCode as QrCodeIcon, Loader2 
+  VolumeX, Volume2, Headphones, QrCode as QrCodeIcon, Loader2, ShieldAlert 
 } from '@lucide/vue';
 
 // Composables managing server connection, audio, theme, window, and system tray
@@ -21,6 +21,7 @@ import { useTray } from './shared/composables/useTray';
 
 // UI components for connection flows, onboarding, and layouts
 import ConnectionErrorDialog from './features/connection/components/ConnectionErrorDialog.vue';
+import PairingDialog from './features/connection/components/PairingDialog.vue';
 import QrCodeDialog from './features/connection/components/QrCodeDialog.vue';
 import AudioRing from './features/audio/components/AudioRing.vue';
 import MonitoringPanel from './features/audio/components/MonitoringPanel.vue';
@@ -424,6 +425,16 @@ onUnmounted(() => {
         </div>
       </div>
 
+      <!-- Unencrypted Session Warning -->
+      <div
+        v-if="server.sessionUnencrypted.value && server.serverState.value === 'streaming'"
+        class="haze-surface rounded-xl px-4 py-2 flex items-center gap-2.5 flex-shrink-0 border border-error/25"
+        role="status"
+      >
+        <ShieldAlert class="w-4 h-4 text-error flex-shrink-0" />
+        <span class="text-xs font-medium text-error">{{ $t('app.security.unencryptedBanner') }}</span>
+      </div>
+
       <!-- Main Content -->
       <div class="flex flex-1 gap-3 min-h-0">
         <!-- Left Panel -->
@@ -485,6 +496,28 @@ onUnmounted(() => {
             <span v-if="server.serverState.value !== 'idle' && server.webClientCount.value > 0" class="text-xs text-primary font-medium">
               {{ $t('app.web.clientsConnected', { count: server.webClientCount.value }) }}
             </span>
+          </div>
+
+          <!-- Security Card -->
+          <div class="haze-surface rounded-2xl p-3 flex flex-col gap-1.5">
+            <span class="text-xs text-on-surface-variant font-medium">{{ $t('app.security.requireEncryption') }}</span>
+            <div class="flex items-center justify-between gap-3">
+              <p class="text-[10px] text-on-surface-variant/80 leading-snug min-w-0">{{ $t('app.security.requireEncryptionDesc') }}</p>
+              <button
+                @click="server.requireEncryption.value = !server.requireEncryption.value"
+                class="group relative inline-flex h-8 w-14 shrink-0 cursor-pointer items-center rounded-full border-2 transition-colors duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary active:scale-95"
+                :class="server.requireEncryption.value ? 'border-primary bg-primary' : 'border-on-surface-variant bg-transparent hover:bg-on-surface-variant/10'"
+                role="switch"
+                :aria-checked="server.requireEncryption.value"
+              >
+                <div class="relative flex items-center justify-center transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)]" :class="server.requireEncryption.value ? 'translate-x-[26px]' : 'translate-x-[4px]'">
+                  <span
+                    class="pointer-events-none block rounded-full shadow-sm ring-0 transition-all duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)]"
+                    :class="server.requireEncryption.value ? 'h-6 w-6 bg-on-primary' : 'h-4 w-4 bg-on-surface-variant group-hover:h-5 group-hover:w-5'"
+                  />
+                </div>
+              </button>
+            </div>
           </div>
 
           <!-- Status Card -->
@@ -592,6 +625,12 @@ onUnmounted(() => {
       :details="server.errorDetails.value"
       @dismiss="server.showErrorDialog.value = false"
       @retry="server.showErrorDialog.value = false; toggleStreaming()"
+    />
+
+    <PairingDialog
+      :request="server.currentPairingRequest.value"
+      @approve="server.resolvePairing(true)"
+      @deny="server.resolvePairing(false)"
     />
 
     <QrCodeDialog

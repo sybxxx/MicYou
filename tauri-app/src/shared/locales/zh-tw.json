@@ -52,7 +52,20 @@
       "aecDisabledModelMissing": "找不到 AEC AI 模型，已自動停用。",
       "aecDisabledPipeWireUnavailable": "PipeWire 不可用，AEC 已自動停用。",
       "aecDisabledReferenceLost": "AEC 音訊參考流已中斷，已自動停用。",
-      "aecDisabledVirtualSourceMissing": "找不到虛擬音訊來源，AEC 已自動停用。"
+      "aecDisabledVirtualSourceMissing": "找不到虛擬音訊來源，AEC 已自動停用。",
+      "paired": "{device} 已完成配對。"
+    },
+    "pairing": {
+      "title": "配對要求",
+      "deviceWantsToPair": "{name} 想要與這部電腦配對。",
+      "compareCode": "請先與手機上顯示的驗證碼核對，一致時再點擊允許。",
+      "approve": "允許",
+      "deny": "拒絕"
+    },
+    "security": {
+      "requireEncryption": "要求 Wi-Fi 用戶端加密連線",
+      "requireEncryptionDesc": "未加密的舊版用戶端將被拒絕連線。",
+      "unencryptedBanner": "目前工作階段尚未加密"
     },
     "ipSelector": {
       "allInterfaces": "全部",

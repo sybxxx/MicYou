@@ -33,6 +33,13 @@ export interface AdbDevice {
   description: string;
 }
 
+// Pending encrypted-pairing request from a Wi-Fi client awaiting user approval
+export interface PairingRequest {
+  requestId: string;
+  deviceName: string;
+  sas: string;
+}
+
 // Interface representing network details returned from the backend
 export interface NetworkInfo {
   ips: string[];
@@ -67,6 +74,10 @@ export function useServer(options?: { audioLevel?: Ref<number>; isMuted?: Ref<bo
   
   // Port for Web RTC / HTTPS server stream
   const webPort = useStorage<number>('micyou_webPort', 8443);
+  
+  // Whether Wi-Fi clients must complete encrypted pairing before connecting
+  // (shared server.json preference, mirrored by the CLI/TUI)
+  const requireEncryption = ref(false);
   
   // Number of clients currently connected to the Web interface
   const webClientCount = ref(0);
@@ -116,6 +127,12 @@ export function useServer(options?: { audioLevel?: Ref<number>; isMuted?: Ref<bo
   // Active configurations when the server is running
   const activeConnectionMode = ref<ConnectionMode | null>(null);
   const activePort = ref<number | null>(null);
+
+  // Encrypted transport: queued pairing requests (oldest shown first) and the
+  // security state of the current client session
+  const pairingQueue = ref<PairingRequest[]>([]);
+  const currentPairingRequest = computed(() => pairingQueue.value[0] ?? null);
+  const sessionUnencrypted = ref(false);
 
   // Computes the display representation of the active bind IP address
   const displayIp = computed(() => {
@@ -435,6 +452,19 @@ export function useServer(options?: { audioLevel?: Ref<number>; isMuted?: Ref<bo
     pendingUsbPort.value = 0;
   };
 
+  /**
+   * Approves or denies the oldest pending pairing request and advances the queue
+   */
+  const resolvePairing = async (accept: boolean) => {
+    const request = pairingQueue.value.shift();
+    if (!request) return;
+    try {
+      await invoke('resolve_pairing', { requestId: request.requestId, accept });
+    } catch (e) {
+      console.error('resolve_pairing failed:', e);
+    }
+  };
+
   let unlistenDeviceConnected: UnlistenFn | null = null;
   let unlistenDeviceDisconnected: UnlistenFn | null = null;
   let unlistenServerStopped: UnlistenFn | null = null;
@@ -442,6 +472,9 @@ export function useServer(options?: { audioLevel?: Ref<number>; isMuted?: Ref<bo
   let unlistenUdpWarning: UnlistenFn | null = null;
   let unlistenWebClients: UnlistenFn | null = null;
   let unlistenAecStatus: UnlistenFn | null = null;
+  let unlistenPairingRequested: UnlistenFn | null = null;
+  let unlistenPairingCompleted: UnlistenFn | null = null;
+  let unlistenSessionSecurity: UnlistenFn | null = null;
 
   // ---- Shared server prefs (server.json, also read/written by the CLI) ----
   interface ServerPrefsBackend {
@@ -451,6 +484,7 @@ export function useServer(options?: { audioLevel?: Ref<number>; isMuted?: Ref<bo
     bindAddress?: string;
     autoBind?: boolean;
     outputDevice?: string;
+    requireEncryption?: boolean;
   }
 
   async function loadServerPrefs() {
@@ -477,6 +511,9 @@ export function useServer(options?: { audioLevel?: Ref<number>; isMuted?: Ref<bo
         outputDevice.value = prefs.outputDevice;
         localStorage.setItem('micyou_output_device', prefs.outputDevice);
       }
+      if (prefs.requireEncryption !== undefined) {
+        requireEncryption.value = prefs.requireEncryption;
+      }
     } catch (e) {
       console.error('Failed to load server prefs:', e);
     }
@@ -494,14 +531,21 @@ export function useServer(options?: { audioLevel?: Ref<number>; isMuted?: Ref<bo
           bindAddress: isAutoBind.value ? '0.0.0.0' : selectedIp.value,
           autoBind: isAutoBind.value,
           outputDevice: outputDevice.value || '',
+          requireEncryption: requireEncryption.value,
         },
       }).catch((e) => console.error('Failed to save server prefs:', e));
     }, 500);
   }
   watch(
-    [connectionMode, serverPort, webPort, isAutoBind, selectedIp, outputDevice],
+    [connectionMode, serverPort, webPort, isAutoBind, selectedIp, outputDevice, requireEncryption],
     persistServerPrefs,
   );
+
+  // A session cannot outlive its server; drop the stale security flag whenever
+  // the server returns to idle (covers stop, faults and restart paths)
+  watch(serverState, (state) => {
+    if (state === 'idle') sessionUnencrypted.value = false;
+  });
 
   onMounted(async () => {
     try {
@@ -551,6 +595,7 @@ export function useServer(options?: { audioLevel?: Ref<number>; isMuted?: Ref<bo
         serverState.value = 'connecting';
         if (options?.audioLevel) options.audioLevel.value = 0;
         if (options?.isMuted) options.isMuted.value = false;
+        sessionUnencrypted.value = false;
         void notify(t('app.notify.disconnected'));
       }
     });
@@ -599,6 +644,27 @@ export function useServer(options?: { audioLevel?: Ref<number>; isMuted?: Ref<bo
       }
     });
 
+    // Encrypted transport: a new phone is requesting to pair; the SAS code is
+    // shown on both screens and must match before the user approves
+    unlistenPairingRequested = await listen<PairingRequest>('pairing-requested', (event) => {
+      pairingQueue.value.push(event.payload);
+    });
+
+    // The backend may serialize the completed-pairing info with either key
+    // casing depending on the struct's serde attributes
+    unlistenPairingCompleted = await listen<{ deviceName?: string; device_name?: string }>('pairing-completed', (event) => {
+      const device = event.payload.deviceName ?? event.payload.device_name;
+      if (device) {
+        void notify(t('app.notify.paired', { device }));
+      }
+    });
+
+    // Emitted whenever a client session starts/stops; encrypted=false means a
+    // legacy plaintext session is streaming
+    unlistenSessionSecurity = await listen<{ encrypted: boolean }>('session-security', (event) => {
+      sessionUnencrypted.value = event.payload.encrypted === false;
+    });
+
     // Start streaming automatically if user configuration allows it
     if (localStorage.getItem('micyou_auto_stream') === 'true') {
       toggleStreaming();
@@ -613,6 +679,9 @@ export function useServer(options?: { audioLevel?: Ref<number>; isMuted?: Ref<bo
     if (unlistenUdpWarning) unlistenUdpWarning();
     if (unlistenWebClients) unlistenWebClients();
     if (unlistenAecStatus) unlistenAecStatus();
+    if (unlistenPairingRequested) unlistenPairingRequested();
+    if (unlistenPairingCompleted) unlistenPairingCompleted();
+    if (unlistenSessionSecurity) unlistenSessionSecurity();
     dismissNotification();
   });
 
@@ -640,6 +709,10 @@ export function useServer(options?: { audioLevel?: Ref<number>; isMuted?: Ref<bo
     showQrDialog,
     notificationsEnabled,
     notificationMessage,
+    requireEncryption,
+    pairingQueue,
+    currentPairingRequest,
+    sessionUnencrypted,
     dismissNotification,
     showIpSwitchConfirm,
     pendingIp,
@@ -651,5 +724,6 @@ export function useServer(options?: { audioLevel?: Ref<number>; isMuted?: Ref<bo
     confirmIpSwitch,
     selectAdbDevice,
     cancelDeviceSelection,
+    resolvePairing,
   };
 }

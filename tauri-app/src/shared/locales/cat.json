@@ -52,7 +52,20 @@
       "aecDisabledModelMissing": "找不到 AEC AI 模型喵~已自动停用喵~",
       "aecDisabledPipeWireUnavailable": "PipeWire 不可用喵~AEC 已自动停用喵~",
       "aecDisabledReferenceLost": "AEC 音频参考流中断了喵~已自动停用喵~",
-      "aecDisabledVirtualSourceMissing": "找不到虚拟音频源喵~AEC 已自动停用喵~"
+      "aecDisabledVirtualSourceMissing": "找不到虚拟音频源喵~AEC 已自动停用喵~",
+      "paired": "{device} 配对成功了喵~ ♪"
+    },
+    "pairing": {
+      "title": "配对请求喵~",
+      "deviceWantsToPair": "{name} 想和这台电脑贴贴喵~",
+      "compareCode": "先核对手机上的代码喵~一样才准它进来喵！",
+      "approve": "允许喵~",
+      "deny": "拒绝喵~"
+    },
+    "security": {
+      "requireEncryption": "Wi-Fi 客户端必须加密喵~",
+      "requireEncryptionDesc": "没加密的旧客户端会被挡在门外喵~",
+      "unencryptedBanner": "这个连接没有加密喵~"
     },
     "ipSelector": {
       "allInterfaces": "全部喵~",

@@ -52,7 +52,20 @@
       "aecDisabledModelMissing": "AEC AI 模型不存，已自停。",
       "aecDisabledPipeWireUnavailable": "PipeWire 不可用，AEC 已自停。",
       "aecDisabledReferenceLost": "AEC 音频参考流已断，已自停。",
-      "aecDisabledVirtualSourceMissing": "虚拟音源不存，AEC 已自停。"
+      "aecDisabledVirtualSourceMissing": "虚拟音源不存，AEC 已自停。",
+      "paired": "{device} 相配已成。"
+    },
+    "pairing": {
+      "title": "相配之请",
+      "deviceWantsToPair": "{name} 欲与此机相配。",
+      "compareCode": "必先较对手机所示之码，合而后许之。",
+      "approve": "许",
+      "deny": "拒"
+    },
+    "security": {
+      "requireEncryption": "Wi-Fi 客户端须加密而后通",
+      "requireEncryptionDesc": "未加密者，拒不与通。",
+      "unencryptedBanner": "今之会话，未经加密"
     },
     "ipSelector": {
       "allInterfaces": "诸网",

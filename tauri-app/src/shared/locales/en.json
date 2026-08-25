@@ -54,7 +54,20 @@
       "aecDisabledModelMissing": "The AEC AI model is missing, so AEC was automatically disabled.",
       "aecDisabledPipeWireUnavailable": "PipeWire is unavailable, so AEC was automatically disabled.",
       "aecDisabledReferenceLost": "The AEC audio reference stream was lost, so AEC was automatically disabled.",
-      "aecDisabledVirtualSourceMissing": "No virtual audio source was found, so AEC was automatically disabled."
+      "aecDisabledVirtualSourceMissing": "No virtual audio source was found, so AEC was automatically disabled.",
+      "paired": "{device} paired successfully."
+    },
+    "pairing": {
+      "title": "Pairing Request",
+      "deviceWantsToPair": "{name} wants to pair with this computer.",
+      "compareCode": "Approve only if this code matches the one shown on your phone.",
+      "approve": "Approve",
+      "deny": "Deny"
+    },
+    "security": {
+      "requireEncryption": "Require encryption for Wi-Fi clients",
+      "requireEncryptionDesc": "Unencrypted legacy clients will be rejected.",
+      "unencryptedBanner": "This session is not encrypted"
     },
     "ipSelector": {
       "allInterfaces": "All Interfaces",
