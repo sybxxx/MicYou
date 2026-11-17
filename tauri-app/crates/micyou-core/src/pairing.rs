@@ -38,7 +38,7 @@ impl PairingBroker {
         device_name: &str,
         sas: &str,
         events: &SharedEvents,
-    ) -> Option<(oneshot::Receiver<bool>, PendingGuard)> {
+    ) -> Option<(oneshot::Receiver<bool>, PendingGuard<'_>)> {
         if self.auto_approve {
             log::warn!(
                 target: "server",

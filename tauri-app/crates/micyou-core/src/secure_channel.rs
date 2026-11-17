@@ -107,6 +107,7 @@ pub(crate) fn transcript_digest(ch_core: &[u8], sh_core: &[u8]) -> Vec<u8> {
         .to_vec()
 }
 
+#[cfg(test)]
 fn transcript_hash(parts: &[&[u8]]) -> Vec<u8> {
     let mut joined = SECURE_TRANSCRIPT_TAG.to_vec();
     for part in parts {

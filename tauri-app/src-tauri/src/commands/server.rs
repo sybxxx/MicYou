@@ -47,15 +47,19 @@ pub async fn get_streaming_status(
     Ok(state.streaming_status().await)
 }
 
+// Async commands borrowing State require Result. Tauri unwraps Ok before IPC,
+// so callers still receive the security object or null, not a Result envelope.
 #[tauri::command]
 pub async fn get_session_security(
     state: State<'_, ServerState>,
-) -> Option<micyou_core::pairing::SessionSecurityState> {
+) -> Result<Option<micyou_core::pairing::SessionSecurityState>, String> {
     if !state.streaming_status().await.is_connected {
-        return None;
+        return Ok(None);
     }
     let encrypted = state.session_crypto.lock().await.is_some();
-    Some(micyou_core::pairing::SessionSecurityState { encrypted })
+    Ok(Some(micyou_core::pairing::SessionSecurityState {
+        encrypted,
+    }))
 }
 
 #[tauri::command]
