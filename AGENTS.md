@@ -144,7 +144,7 @@ cargo run -p micyou-tui
 
 ## Testing and QA
 
-- Rust unit tests live mostly in `micyou-core`, plus `micyou-audio`, `micyou-plugin`, `micyou-tui` and `src-tauri`; `micyou-protocol` and `micyou-cli` have none; there are no integration test directories
+- Rust unit tests live mostly in `micyou-core`, plus `micyou-audio`, `micyou-plugin`, `micyou-tui` and `src-tauri`; `micyou-protocol` covers wire-field compatibility and `micyou-cli` covers JSONL parsing. Secure transport regressions use owned loopback sockets without real audio devices; there are no integration test directories
 - Android unit tests under `composeApp/src/test` cover encrypted protocol/pairing, audio-health and session-start policy, discovery/retry policy, and bounded transport writes; run `./gradlew :composeApp:testDebugUnitTest`
 - Gates to keep green: `cargo test`, `cargo clippy`, `bun run build` (the only frontend type check) and `./gradlew :composeApp:assembleDebug`; there is no lint or format wiring, `.prettierrc` exists but nothing runs it
 - End-to-end verification is manual: phone → server → virtual mic; `micyou-cli serve` with `adb reverse` is the quickest desktop side for device tests

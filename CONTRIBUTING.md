@@ -95,7 +95,7 @@ bun run tauri build --no-bundle  # Windows executables; see the Inno Setup comma
 Windows releases and user installations use Inno Setup, not the Tauri NSIS bundle:
 
 ```powershell
-iscc tauri-app/src-tauri/installer.iss # from the repository root, after the executable/sidecar build
+iscc src-tauri/installer.iss # from tauri-app/, after the executable/sidecar build
 ```
 
 The installer is written to `tauri-app/src-tauri/target/release/bundle/inno/`.

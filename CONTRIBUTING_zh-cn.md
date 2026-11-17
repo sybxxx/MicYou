@@ -60,7 +60,7 @@ bun run tauri build --no-bundle  # Windows 可执行文件与终端程序；安�
 Windows 发布和用户安装统一使用 Inno Setup，不分发 Tauri 生成的 NSIS 安装包：
 
 ```powershell
-iscc tauri-app/src-tauri/installer.iss # 在仓库根目录执行，须先完成可执行文件和 sidecar 构建
+iscc src-tauri/installer.iss # 在 tauri-app/ 执行，须先完成可执行文件和 sidecar 构建
 ```
 
 安装包输出到 `tauri-app/src-tauri/target/release/bundle/inno/`。Linux 和 macOS 仍用 `bun run tauri build` 生成平台安装包。
