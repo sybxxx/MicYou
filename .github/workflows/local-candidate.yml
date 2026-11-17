@@ -81,6 +81,9 @@ jobs:
           New-Item -ItemType Directory -Force $env:APPDATA | Out-Null
           # The tests do not package terminal sidecars; the real build below does.
           $env:TAURI_CONFIG = '{"bundle":{"externalBin":[]}}'
+          # Upstream native_loader tests explicitly load the debug cdylib fixture.
+          cargo build -p micyou-plugin-fixture-native --locked
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test --workspace --release --locked
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo clippy --workspace --all-targets --release --locked
