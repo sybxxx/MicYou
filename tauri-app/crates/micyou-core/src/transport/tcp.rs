@@ -50,6 +50,7 @@ const FRAME_HEADER_LEN: usize = 8;
 const MAX_CONTROL_PAYLOAD_LEN: usize = 1024 * 1024;
 const PAIRING_TIMEOUT: Duration = Duration::from_secs(180);
 const AUDIO_HEALTH_TIMEOUT: Duration = Duration::from_secs(3);
+const AUDIO_STALL_TIMEOUT: Duration = Duration::from_secs(10);
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_CONCURRENT_CLIENTS: usize = 64;
 const FRAME_READ_TIMEOUT: Duration = Duration::from_secs(10);
@@ -339,6 +340,7 @@ async fn serve(
     // Take ownership of the published raw socket while handle_client still owns the
     // corresponding TcpStream, then shut it down so client tasks can exit cooperatively.
     cleanup_session_state(&active_connection, &active_audio_session, &session_crypto).await;
+    stats.mark_tcp_disconnected();
     if timeout(CLIENT_SHUTDOWN_GRACE_PERIOD, async {
         while clients.join_next().await.is_some() {}
     })
@@ -779,17 +781,21 @@ async fn handle_client(
                 break;
             }
             let now = crate::stats::unix_millis();
-            let started = stats_emit.get_tcp_connected_time();
-            let baseline = stats_emit.audio_health_baseline();
-            if !stats_emit.is_muted() && started != 0 && now.saturating_sub(baseline) > 10_000 {
+            if audio_output_stalled(&stats_emit, now) {
                 // Keep teardown in the owning reader. Closing this owned socket
                 // wakes it, then it atomically retires only its own connection.
                 run_if_active(&monitor_active, &monitor_token, connection_id, || {
-                    monitor_token.cancel();
-                    force_close_socket(raw);
+                    // A remote pause/unpause may have arrived while waiting
+                    // for the active-slot lock; decide using its latest state.
+                    if audio_output_stalled(&stats_emit, crate::stats::unix_millis()) {
+                        monitor_token.cancel();
+                        force_close_socket(raw);
+                    }
                 })
                 .await;
-                break;
+                if monitor_token.is_cancelled() {
+                    break;
+                }
             }
             let buffer_duration = if mode == ConnectionMode::Usb { 5 } else { 30 };
             let metrics = stats_emit.to_metrics(buffer_duration);
@@ -800,7 +806,7 @@ async fn handle_client(
                 && mode == ConnectionMode::Wifi
                 && !warning_fired
                 && !is_tcp_only
-                && !stats_emit.is_muted()
+                && !stats_emit.is_audio_intentionally_paused()
             {
                 let tcp_time = stats_emit.get_tcp_connected_time();
                 let last_udp = stats_emit.get_last_udp_time();
@@ -811,7 +817,8 @@ async fn handle_client(
                 if tcp_time > 0
                     && last_udp == 0
                     && last_audio == 0
-                    && now.saturating_sub(tcp_time) > 10_000
+                    && now.saturating_sub(stats_emit.audio_health_baseline())
+                        > AUDIO_STALL_TIMEOUT.as_millis() as u64
                 {
                     events_emit.udp_audio_warning();
                     warning_fired = true;
@@ -1002,18 +1009,20 @@ async fn handle_message(
         }
     }
     if let Some(mute) = msg.mute {
-        // Mute sync disabled (server.json): ignore mute state coming from the
-        // mobile client so it can neither change local state nor the UI.
-        // A superseded connection must not flip the mute state either. The
-        // plugin callbacks run outside the connection lock: plugins query
-        // that lock (try_lock) and would misread a held one as disconnected.
-        if crate::config::load_server_prefs().mute_sync
-            && is_active(active_connection, takeover_token, connection_id).await
-        {
-            let is_muted = mute.is_muted.unwrap_or(false);
-            log::info!("Received mute state: {}", is_muted);
-            stats.set_muted(is_muted);
-            events.mute_state_changed(is_muted);
+        // The phone stops sending audio when locally muted, even with desktop
+        // mute synchronization disabled. Retain that session-health signal
+        // without changing the local output or UI in the independent mode.
+        let synchronize_desktop = crate::config::load_server_prefs().mute_sync;
+        let is_muted = mute.is_muted.unwrap_or(false);
+        let applied = run_if_active(active_connection, takeover_token, connection_id, || {
+            apply_remote_mute(stats, is_muted, synchronize_desktop);
+            if synchronize_desktop {
+                events.mute_state_changed(is_muted);
+            }
+        })
+        .await;
+        // Plugin callbacks may inspect the connection: run them outside its lock.
+        if applied && synchronize_desktop {
             plugins.broadcast_event(&micyou_plugin::PluginEvent::MuteChanged { muted: is_muted });
         }
     }
@@ -1028,13 +1037,27 @@ async fn handle_message(
 }
 
 fn audio_health_is_healthy(stats: &crate::stats::NetworkStats, now: u64) -> bool {
-    if stats.is_muted() {
+    if stats.is_audio_intentionally_paused() {
         return true;
     }
     let started = stats.get_tcp_connected_time();
     started == 0
         || now.saturating_sub(stats.audio_health_baseline())
             <= AUDIO_HEALTH_TIMEOUT.as_millis() as u64
+}
+
+fn apply_remote_mute(stats: &crate::stats::NetworkStats, paused: bool, synchronize_desktop: bool) {
+    stats.set_remote_audio_paused(paused);
+    if synchronize_desktop {
+        stats.set_muted(paused);
+    }
+}
+
+fn audio_output_stalled(stats: &crate::stats::NetworkStats, now: u64) -> bool {
+    !stats.is_audio_intentionally_paused()
+        && stats.get_tcp_connected_time() != 0
+        && now.saturating_sub(stats.audio_health_baseline())
+            > AUDIO_STALL_TIMEOUT.as_millis() as u64
 }
 
 async fn rebuild_listener(
@@ -1100,6 +1123,69 @@ mod tests {
         stats.set_muted(false);
         assert!(audio_health_is_healthy(&stats, crate::stats::unix_millis()));
         assert_eq!(stats.get_last_audio_output_time(), 0);
+    }
+
+    #[test]
+    fn remote_mute_without_sync_pauses_health_without_muting_desktop() {
+        let stats = crate::stats::NetworkStats::default();
+        let now = crate::stats::unix_millis();
+        stats.mark_tcp_connected(now.saturating_sub(20_000));
+        assert!(audio_output_stalled(&stats, now));
+
+        apply_remote_mute(&stats, true, false);
+        assert!(!stats.is_muted());
+        assert!(stats.is_remote_audio_paused());
+        // The monitor and Ping share this pause policy, so a long intentional
+        // pause neither reports unhealthy nor reaches the disconnect branch.
+        assert!(audio_health_is_healthy(&stats, now + 60_000));
+        assert!(!audio_output_stalled(&stats, now + 60_000));
+        assert_eq!(stats.get_last_audio_output_time(), 0);
+
+        apply_remote_mute(&stats, false, false);
+        let resumed = stats.audio_health_baseline();
+        assert!(!stats.is_muted());
+        assert!(!stats.is_remote_audio_paused());
+        assert!(audio_health_is_healthy(&stats, resumed));
+        assert!(!audio_health_is_healthy(&stats, resumed + 3_001));
+        assert!(!audio_output_stalled(&stats, resumed + 10_000));
+        assert!(audio_output_stalled(&stats, resumed + 10_001));
+        assert_eq!(stats.get_last_audio_output_time(), 0);
+    }
+
+    #[test]
+    fn remote_pause_does_not_overwrite_an_independently_muted_desktop() {
+        let stats = crate::stats::NetworkStats::default();
+        stats.set_muted(true);
+        apply_remote_mute(&stats, true, false);
+        apply_remote_mute(&stats, false, false);
+        assert!(stats.is_muted());
+        assert!(!stats.is_remote_audio_paused());
+
+        // Synchronized mode retains the existing shared mute behavior.
+        apply_remote_mute(&stats, false, true);
+        assert!(!stats.is_muted());
+        apply_remote_mute(&stats, true, true);
+        assert!(stats.is_muted());
+    }
+
+    #[test]
+    fn disconnect_and_takeover_clear_remote_pause_and_recovery_grace() {
+        let stats = crate::stats::NetworkStats::default();
+        stats.set_muted(true);
+        apply_remote_mute(&stats, true, false);
+        apply_remote_mute(&stats, false, false);
+        assert_ne!(stats.audio_health_baseline(), 0);
+        apply_remote_mute(&stats, true, false);
+        stats.mark_tcp_disconnected();
+        assert!(!stats.is_remote_audio_paused());
+        assert_eq!(stats.audio_health_baseline(), 0);
+        assert!(stats.is_muted());
+
+        apply_remote_mute(&stats, true, false);
+        stats.mark_tcp_connected(1_000);
+        assert!(!stats.is_remote_audio_paused());
+        assert_eq!(stats.audio_health_baseline(), 1_000);
+        assert!(stats.is_muted());
     }
 
     #[tokio::test]

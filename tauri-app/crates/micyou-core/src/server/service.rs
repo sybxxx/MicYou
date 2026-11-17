@@ -177,6 +177,7 @@ async fn rollback_start(
     )
     .await;
     join_tasks_bounded(tasks, NETWORK_TASK_JOIN_TIMEOUT).await;
+    state.network_stats.mark_tcp_disconnected();
     *state.session_crypto.lock().await = None;
     state.cancel_token.lock().await.take();
     if let Some(mdns) = state.mdns_manager.lock().await.take() {
@@ -518,6 +519,7 @@ pub async fn stop_server(state: &ServerState) -> Result<String, String> {
     )
     .await;
     join_tasks_bounded(tasks, NETWORK_TASK_JOIN_TIMEOUT).await;
+    state.network_stats.mark_tcp_disconnected();
     *state.session_crypto.lock().await = None;
     let audio_result = state
         .lifecycle

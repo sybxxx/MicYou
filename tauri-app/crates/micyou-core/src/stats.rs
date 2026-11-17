@@ -46,6 +46,9 @@ pub struct NetworkStats {
     /// (NetworkStats itself is never serialized — the frontend receives
     /// AudioMetrics via `to_metrics` — so no serde attribute is needed here.)
     pub is_muted: Arc<AtomicBool>,
+    /// Whether the current phone intentionally stopped sending microphone audio.
+    /// Independent of the local output mute when mute synchronization is off.
+    pub remote_audio_paused: AtomicBool,
     pub channels: AtomicU32,
     pub input_level_bits: AtomicU32,
     pub processed_level_bits: AtomicU32,
@@ -65,6 +68,7 @@ impl Default for NetworkStats {
             bitrate: AtomicU32::new(0),
             sample_rate: AtomicU32::new(0),
             is_muted: Arc::new(AtomicBool::new(false)),
+            remote_audio_paused: AtomicBool::new(false),
             channels: AtomicU32::new(0),
             input_level_bits: AtomicU32::new(0f32.to_bits()),
             processed_level_bits: AtomicU32::new(0f32.to_bits()),
@@ -135,6 +139,7 @@ impl NetworkStats {
         self.last_audio_packet_time_ms.store(0, Ordering::Relaxed);
     }
     pub fn mark_tcp_disconnected(&self) {
+        self.remote_audio_paused.store(false, Ordering::Relaxed);
         self.audio_health_grace_start_ms.store(0, Ordering::Relaxed);
         self.last_audio_output_time_ms.store(0, Ordering::Relaxed);
         self.tcp_connected_time_ms.store(0, Ordering::Relaxed);
@@ -158,6 +163,18 @@ impl NetworkStats {
     }
     pub fn is_muted(&self) -> bool {
         self.is_muted.load(Ordering::Relaxed)
+    }
+    pub fn set_remote_audio_paused(&self, paused: bool) {
+        if self.remote_audio_paused.swap(paused, Ordering::Relaxed) && !paused {
+            self.audio_health_grace_start_ms
+                .store(unix_millis(), Ordering::Relaxed);
+        }
+    }
+    pub fn is_remote_audio_paused(&self) -> bool {
+        self.remote_audio_paused.load(Ordering::Relaxed)
+    }
+    pub fn is_audio_intentionally_paused(&self) -> bool {
+        self.is_muted() || self.is_remote_audio_paused()
     }
     /// Clone of the shared mute flag, for wiring into the audio output engine.
     pub fn mute_flag(&self) -> Arc<AtomicBool> {
