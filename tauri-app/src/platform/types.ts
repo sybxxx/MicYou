@@ -12,6 +12,18 @@ export interface ServerPrefs {
   autoBind: boolean;
   outputDevice: string;
   muteSync: boolean;
+  requireEncryption: boolean;
+  listenerWatchdog: boolean;
+}
+
+export interface PairingRequest {
+  requestId: string;
+  deviceName: string;
+  sas: string;
+}
+
+export interface SessionSecurity {
+  encrypted: boolean;
 }
 
 /** Platform the phone reported when it connected; `unknown` for clients that predate the field. */

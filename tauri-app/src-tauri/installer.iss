@@ -1,6 +1,6 @@
 ﻿#define MyAppName "MicYou"
 #ifndef MyAppVersion
-  #define MyAppVersion "2.2.0"
+  #define MyAppVersion "2.2.0+local.1"
 #endif
 #define MyAppPublisher "LanRhyme"
 #define MyAppURL "https://github.com/MicYou-Dev/MicYou"
@@ -21,7 +21,11 @@ DisableDirPage=no
 DisableProgramGroupPage=yes
 UsePreviousAppDir=yes
 PrivilegesRequired=admin
-PrivilegesRequiredOverridesAllowed=dialog
+PrivilegesRequiredOverridesAllowed=dialog commandline
+; Restart Manager closes only applications using files being replaced. Do not
+; terminate every process sharing the same image name (including dev sessions).
+CloseApplications=yes
+RestartApplications=no
 OutputBaseFilename={#MyAppName}_{#MyAppVersion}_x64-setup
 OutputDir=target\release\bundle\inno
 Compression=lzma2/max
@@ -50,6 +54,8 @@ english.PrivilegesRequiredOverrideCurrentUser=Install for &you only (requires ma
 english.PrivilegesRequiredOverrideCurrentUserRecommended=Install for &you only (requires manual firewall configuration)
 
 [CustomMessages]
+chinesesimplified.WebView2Missing=未检测到 Microsoft WebView2 运行时。请安装后重新运行 MicYou 安装程序。
+english.WebView2Missing=Microsoft WebView2 Runtime was not detected. Install it, then run MicYou setup again.
 chinesesimplified.NetworkGroupDescription=网络设置
 chinesesimplified.FirewallTaskDescription=放行 Windows 防火墙（推荐，允许 MicYou 通过防火墙接收来自 Android 设备的音频连接）
 english.NetworkGroupDescription=Network settings
@@ -84,6 +90,30 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
 
 [Code]
+function WebView2Installed(): Boolean;
+var
+  Version: String;
+  Key: String;
+begin
+  Key := 'SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}';
+  Result :=
+    (RegQueryStringValue(HKLM32, Key, 'pv', Version) and (Version <> '') and (Version <> '0.0.0.0')) or
+    (RegQueryStringValue(HKLM64, Key, 'pv', Version) and (Version <> '') and (Version <> '0.0.0.0')) or
+    (RegQueryStringValue(HKCU, Key, 'pv', Version) and (Version <> '') and (Version <> '0.0.0.0'));
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  ErrorCode: Integer;
+begin
+  Result := '';
+  if not WebView2Installed() then begin
+    Result := CustomMessage('WebView2Missing');
+    if not WizardSilent() then
+      ShellExec('open', 'https://go.microsoft.com/fwlink/p/?LinkId=2124703', '', '', SW_SHOWNORMAL, ewNoWait, ErrorCode);
+  end;
+end;
+
 // Windows Firewall handling, modeled after the qBittorrent installer
 // (nsisFirewallW::AddAuthorizedApplication on install /
 //  RemoveAuthorizedApplication on uninstall):

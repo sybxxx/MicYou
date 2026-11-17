@@ -13,6 +13,7 @@ import {
 } from '@/shared/components/ui/select';
 import MD3Switch from '@/shared/components/ui/switch/MD3Switch.vue';
 import { muteSyncEnabled } from '@/features/connection/composables/useMuteSync';
+import { requireEncryption } from '@/features/connection/composables/useEncryption';
 import { useAppPrefs } from '../../composables/useAppPrefs';
 import { useAudioSettings } from '../../composables/useAudioSettings';
 import { useLanguageSetting } from '../../composables/useLanguageSetting';
@@ -180,6 +181,10 @@ onMounted(() => {
 
     <SettingRow :title="$t('muteSync.title')" :desc="$t('muteSync.desc')">
       <MD3Switch v-model="muteSyncEnabled" />
+    </SettingRow>
+
+    <SettingRow :title="$t('app.security.requireEncryption')" :desc="$t('app.security.requireEncryptionDesc')">
+      <MD3Switch v-model="requireEncryption" />
     </SettingRow>
 
     <SettingRow :title="$t('settings.pocketMode.title')" :desc="$t('settings.pocketMode.desc')">

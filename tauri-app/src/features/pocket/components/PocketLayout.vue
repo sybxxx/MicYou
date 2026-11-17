@@ -2,7 +2,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue';
 import {
   Link, Unlink, RefreshCw, Globe, ChevronDown, MoreHorizontal,
-  VolumeX, Volume2, Headphones, Loader2, Wifi, Mic, Settings, CheckCircle2, Minus, X,
+  VolumeX, Volume2, Headphones, Loader2, Wifi, Mic, Settings, CheckCircle2, Minus, X, ShieldAlert, ShieldCheck,
 } from '@lucide/vue';
 import type { ConnectionMode } from '@/features/connection/composables/useServer';
 import type { NetworkInterfaceInfo } from '@/platform';
@@ -19,6 +19,7 @@ const props = defineProps<{
   isMuted: boolean;
   isMonitoringEnabled: boolean;
   isMacOS: boolean;
+  sessionEncrypted: boolean | null;
 }>();
 
 const emit = defineEmits<{
@@ -105,6 +106,10 @@ const portValue = (e: Event) => Number((e.target as HTMLInputElement).value);
 
       <!-- Status Dot -->
       <div class="w-2 h-2 rounded-full shrink-0 pointer-events-none" :class="statusColor" />
+      <span v-if="serverState === 'streaming' && sessionEncrypted !== null" :title="$t(sessionEncrypted ? 'app.security.encryptedBanner' : 'app.security.unencryptedBanner')">
+        <ShieldCheck v-if="sessionEncrypted" class="h-4 w-4 text-primary" />
+        <ShieldAlert v-else class="h-4 w-4 text-error" />
+      </span>
 
       <!-- Connect Button -->
       <button

@@ -127,7 +127,11 @@ impl HostApi for PluginHostApi {
 
     fn get_config(&self, key: &str) -> Option<serde_json::Value> {
         let manager = self.host.manager.lock().ok()?;
-        manager.plugin_config(&self.plugin_id).ok()?.get(key).cloned()
+        manager
+            .plugin_config(&self.plugin_id)
+            .ok()?
+            .get(key)
+            .cloned()
     }
 
     fn set_config(&self, key: &str, value: serde_json::Value) -> PluginResult<()> {
@@ -197,7 +201,10 @@ impl HostApi for PluginHostApi {
         let channels = stats.channels.load(Ordering::Relaxed);
         let queued_ms = server.audio_output.queued_ms();
         AudioStateSnapshot {
-            streaming: is_server_running && (control_connected || audio_active || web_connected),
+            streaming: is_server_running
+                && (((control_connected || audio_active)
+                    && stats.get_last_audio_output_time() != 0)
+                    || web_connected),
             sample_rate: stats.sample_rate.load(Ordering::Relaxed),
             channels,
             input_level: f32::from_bits(stats.input_level_bits.load(Ordering::Relaxed)),
@@ -313,7 +320,10 @@ impl HostApi for PluginHostApi {
     }
 
     fn notify(&self, title: &str, body: &str) -> PluginResult<()> {
-        self.host.host.notify(title, body).map_err(PluginError::Runtime)
+        self.host
+            .host
+            .notify(title, body)
+            .map_err(PluginError::Runtime)
     }
 
     fn locale(&self) -> String {

@@ -15,13 +15,27 @@
 
 //! Forwards core server events to the webview.
 
-use micyou_core::events::{AecStatus, DownloadProgress, ServerEvents, SpectrumPayload};
+use micyou_core::events::{
+    AecStatus, DownloadProgress, PairingRequestInfo, ServerEvents, SpectrumPayload,
+};
 use micyou_core::stats::AudioMetrics;
 use micyou_core::transport::tcp::DeviceInfo;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
 pub struct TauriEventSink(pub AppHandle);
+
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+struct PairingCompletedInfo {
+    device_name: String,
+}
+
+#[derive(Serialize, Clone, Debug)]
+struct ServerFault {
+    component: String,
+    message: String,
+}
 
 impl TauriEventSink {
     fn emit<S: Serialize + Clone>(&self, event: &str, payload: S) {
@@ -75,5 +89,43 @@ impl ServerEvents for TauriEventSink {
     }
     fn plugin_download_progress(&self, progress: DownloadProgress) {
         self.emit("plugin-download-progress", progress);
+    }
+    fn server_fault(&self, component: String, message: String) {
+        self.emit("server-fault", ServerFault { component, message });
+    }
+    fn pairing_requested(&self, request: PairingRequestInfo) {
+        self.emit("pairing-requested", request);
+    }
+    fn pairing_completed(&self, device_name: String) {
+        self.emit("pairing-completed", PairingCompletedInfo { device_name });
+    }
+    fn session_security_changed(&self, encrypted: bool) {
+        self.emit(
+            "session-security",
+            micyou_core::pairing::SessionSecurityState { encrypted },
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pairing_events_match_typed_frontend_keys() {
+        let request = serde_json::to_value(PairingRequestInfo {
+            request_id: "connection-1".into(),
+            device_name: "Phone".into(),
+            sas: "123456".into(),
+        })
+        .unwrap();
+        assert_eq!(request["requestId"], "connection-1");
+        assert_eq!(request["deviceName"], "Phone");
+        assert!(request.get("request_id").is_none());
+        let completed = serde_json::to_value(PairingCompletedInfo {
+            device_name: "Phone".into(),
+        })
+        .unwrap();
+        assert_eq!(completed["deviceName"], "Phone");
     }
 }

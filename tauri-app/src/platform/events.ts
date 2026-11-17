@@ -1,5 +1,5 @@
 import { emitTo, listen, type UnlistenFn } from '@tauri-apps/api/event';
-import type { AecStatus, AudioMetrics, DeviceInfo, PluginDownloadProgress, SpectrumPayload } from './types';
+import type { AecStatus, AudioMetrics, DeviceInfo, PairingRequest, PluginDownloadProgress, SessionSecurity, SpectrumPayload } from './types';
 
 export type { UnlistenFn };
 
@@ -8,6 +8,10 @@ export interface AppEvents {
   'device-connected': DeviceInfo;
   'device-disconnected': unknown;
   'server-stopped': unknown;
+  'server-fault': { component: string; message: string };
+  'pairing-requested': PairingRequest;
+  'pairing-completed': { deviceName: string };
+  'session-security': SessionSecurity;
   'audio-level': number;
   'audio-metrics': AudioMetrics;
   'audio-spectrum': SpectrumPayload;

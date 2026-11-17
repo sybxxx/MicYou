@@ -55,7 +55,11 @@
       "aecDisabledPipeWireUnavailable": "PipeWire is unavailable, so AEC was automatically disabled.",
       "aecDisabledReferenceLost": "The AEC audio reference stream was lost, so AEC was automatically disabled.",
       "aecDisabledUnsupportedOs": "This system version cannot capture system audio, so AEC was automatically disabled.",
-      "aecDisabledVirtualSourceMissing": "No virtual audio source was found, so AEC was automatically disabled."
+      "aecDisabledVirtualSourceMissing": "No virtual audio source was found, so AEC was automatically disabled.",
+      "pairingRequested": "Pairing request from {device}. Compare the code in the MicYou window and approve.",
+      "paired": "{device} paired successfully.",
+      "serverFault": "Desktop audio service failed ({component}).",
+      "udpAudioWarning": "Audio packets stopped arriving; waiting for the phone to reconnect."
     },
     "ipSelector": {
       "allInterfaces": "All Interfaces",
@@ -82,6 +86,21 @@
       "bitrate": "Bitrate",
       "totalLatency": "Total Latency",
       "buffer": "Buffer"
+    },
+    "pairing": {
+      "title": "Pairing Request",
+      "deviceWantsToPair": "{name} wants to pair with this computer.",
+      "compareCode": "Approve only if this code matches the one shown on your phone.",
+      "approve": "Approve",
+      "deny": "Deny",
+      "expired": "Pairing request expired. Reconnect the phone and compare the new code.",
+      "failed": "Could not submit the pairing decision. Try again."
+    },
+    "security": {
+      "requireEncryption": "Require encryption for Wi-Fi clients",
+      "requireEncryptionDesc": "Reject unencrypted Wi-Fi clients. Restart streaming after changing this setting.",
+      "unencryptedBanner": "This session is not encrypted",
+      "encryptedBanner": "This session is encrypted"
     }
   },
   "settings": {

@@ -18,6 +18,8 @@ micyou-audio = { workspace = true, features = ["dsp", "noise-suppression"] }
 micyou-plugin.workspace = true
 micyou-protocol.workspace = true
 
+base64 = "0.22"
+ring = "0.17"
 arboard = "3.6.1"
 cpal.workspace = true
 hostname = "0.4.2"
@@ -38,9 +40,9 @@ tokio-util = "0.7.18"
 zip.workspace = true
 
 axum = { version = "0.8.9", features = ["ws"], optional = true }
-rcgen = { version = "0.14", optional = true }
-rustls = { version = "0.23.40", optional = true }
-tokio-rustls = { version = "0.26.4", optional = true }
+rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"], optional = true }
+rustls = { version = "0.23.40", default-features = false, features = ["ring", "std", "tls12", "logging"], optional = true }
+tokio-rustls = { version = "0.26.4", default-features = false, features = ["ring", "logging", "tls12"], optional = true }
 
 global-hotkey = { version = "0.8.0", optional = true }
 notify-rust = { version = "4.17.0", optional = true }

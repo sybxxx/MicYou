@@ -34,6 +34,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.res.stringResource
 import com.lanrhyme.micyou.network.ConnectionErrorDetails
+import com.lanrhyme.micyou.audio.AudioEngine
 import com.lanrhyme.micyou.theme.AppTheme
 import com.lanrhyme.micyou.theme.ThemeMode
 import com.lanrhyme.micyou.ui.dialog.PermissionDialog
@@ -284,6 +285,14 @@ fun App(
                 )
             }
 
+            uiState.pairingPrompt?.let { prompt ->
+                SecurePairingDialog(
+                    prompt = prompt,
+                    onConfirm = { finalViewModel.answerPairingPrompt(true) },
+                    onDeny = { finalViewModel.answerPairingPrompt(false) }
+                )
+            }
+
             // Connection Error Dialog
             val errorDetailsValue = uiState.errorDetails
             if (uiState.showErrorDialog && errorDetailsValue != null) {
@@ -295,6 +304,57 @@ fun App(
             }
         }
     }
+}
+
+/**
+ * 首次加密配对：两端各自显示同一个短认证码（SAS），用户核对一致后放行。
+ */
+@Composable
+private fun SecurePairingDialog(
+    prompt: AudioEngine.PairingPrompt,
+    onConfirm: () -> Unit,
+    onDeny: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDeny,
+        title = {
+            Text(
+                text = stringResource(R.string.pairingTitle),
+                style = MaterialTheme.typography.titleMedium
+            )
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    text = stringResource(R.string.pairingMessage, prompt.peer),
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                Text(
+                    text = prompt.sas,
+                    style = MaterialTheme.typography.headlineLarge,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 6.sp,
+                    modifier = Modifier.fillMaxWidth(),
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                )
+                Text(
+                    text = stringResource(R.string.pairingHint),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onConfirm) {
+                Text(stringResource(R.string.pairingApprove))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDeny) {
+                Text(stringResource(R.string.pairingDeny))
+            }
+        }
+    )
 }
 
 /**

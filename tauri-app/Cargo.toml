@@ -16,7 +16,7 @@ members = [
 opus-decoder = { git = "https://github.com/tfr0305/Rusopus.git", branch = "master" }
 
 [workspace.package]
-version = "2.2.0"
+version = "2.2.0+local.1"
 authors = ["LanRhyme"]
 edition = "2021"
 license = "GPL-3.0-or-later"
@@ -33,7 +33,7 @@ cpal = "0.18.2"
 libc = "0.2.186"
 log = "0.4.32"
 prost = "0.14.4"
-reqwest = { version = "0.13.4", features = ["json", "blocking"] }
+reqwest = { version = "0.13.4", default-features = false, features = ["json", "blocking", "native-tls"] }
 semver = "1.0.28"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"

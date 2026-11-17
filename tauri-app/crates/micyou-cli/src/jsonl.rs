@@ -236,6 +236,34 @@ impl ServerEvents for JsonlEventSink {
     fn plugin_download_progress(&self, progress: micyou_core::events::DownloadProgress) {
         self.emit("plugin_download_progress", json!(progress), false);
     }
+
+    fn server_fault(&self, component: String, message: String) {
+        self.emit(
+            "server_fault",
+            json!({ "component": component, "message": message }),
+            false,
+        );
+    }
+
+    fn pairing_requested(&self, request: micyou_core::events::PairingRequestInfo) {
+        self.emit("pairing_requested", json!(request), false);
+    }
+
+    fn pairing_completed(&self, device_name: String) {
+        self.emit(
+            "pairing_completed",
+            json!({ "deviceName": device_name }),
+            false,
+        );
+    }
+
+    fn session_security_changed(&self, encrypted: bool) {
+        self.emit(
+            "session_security_changed",
+            json!({ "encrypted": encrypted }),
+            false,
+        );
+    }
 }
 
 struct Request {

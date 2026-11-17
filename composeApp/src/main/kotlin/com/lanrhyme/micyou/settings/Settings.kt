@@ -31,6 +31,8 @@ import com.lanrhyme.micyou.util.ContextHelper
 import com.lanrhyme.micyou.util.getString
 import com.lanrhyme.micyou.util.Logger
 interface Settings {
+    /** Existing paired endpoints are needed to prevent plaintext downgrade after an upgrade. */
+    fun getStringEntries(prefix: String): Map<String, String>
     fun getString(key: String, defaultValue: String): String
     fun putString(key: String, value: String)
     fun getLong(key: String, defaultValue: Long): Long
@@ -101,6 +103,10 @@ class AndroidSettings(private val context: Context) : Settings {
         Logger.e("AndroidSettings", "Failed to decrypt mirror CDK", it)
         null
     }
+
+    override fun getStringEntries(prefix: String): Map<String, String> = prefs.all.entries
+        .filter { it.key.startsWith(prefix) && it.value is String }
+        .associate { it.key to (it.value as String) }
 
     override fun getString(key: String, defaultValue: String): String {
         val raw = prefs.getString(key, null) ?: return defaultValue

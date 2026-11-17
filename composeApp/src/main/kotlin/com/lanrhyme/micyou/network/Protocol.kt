@@ -114,7 +114,11 @@ data class ConnectMessage(
 @Serializable
 data class PingMessage(
     @ProtoNumber(1)
-    val timestamp: Long
+    val timestamp: Long,
+    @ProtoNumber(2)
+    val audioHealthSupported: Boolean = false,
+    @ProtoNumber(3)
+    val audioHealthy: Boolean = false
 )
 
 @OptIn(ExperimentalSerializationApi::class)
@@ -186,11 +190,103 @@ data class PluginMessage(
     }
 }
 
+@OptIn(ExperimentalSerializationApi::class)
+@Serializable
+data class SecureClientHello(
+    // Bitmask of supported suites; bit N set means suite N+1 is supported.
+    @ProtoNumber(1)
+    val suiteMask: Int = 0,
+    @ProtoNumber(2)
+    val ephemeralPubKey: ByteArray = ByteArray(0),
+    @ProtoNumber(3)
+    val identityPubKey: ByteArray = ByteArray(0),
+    @ProtoNumber(4)
+    val transcriptSignature: ByteArray = ByteArray(0),
+    @ProtoNumber(5)
+    val deviceName: String = ""
+) {
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other == null || this::class != other::class) return false
+
+        other as SecureClientHello
+
+        if (suiteMask != other.suiteMask) return false
+        if (!ephemeralPubKey.contentEquals(other.ephemeralPubKey)) return false
+        if (!identityPubKey.contentEquals(other.identityPubKey)) return false
+        if (!transcriptSignature.contentEquals(other.transcriptSignature)) return false
+        if (deviceName != other.deviceName) return false
+
+        return true
+    }
+
+    override fun hashCode(): Int {
+        var result = suiteMask
+        result = 31 * result + ephemeralPubKey.contentHashCode()
+        result = 31 * result + identityPubKey.contentHashCode()
+        result = 31 * result + transcriptSignature.contentHashCode()
+        result = 31 * result + deviceName.hashCode()
+        return result
+    }
+}
+
+@OptIn(ExperimentalSerializationApi::class)
+@Serializable
+data class SecureServerHello(
+    @ProtoNumber(1)
+    val suite: Int = 0,
+    @ProtoNumber(2)
+    val identityPubKey: ByteArray = ByteArray(0),
+    @ProtoNumber(3)
+    val ephemeralPubKey: ByteArray = ByteArray(0),
+    @ProtoNumber(4)
+    val transcriptSignature: ByteArray = ByteArray(0)
+) {
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other == null || this::class != other::class) return false
+
+        other as SecureServerHello
+
+        if (suite != other.suite) return false
+        if (!identityPubKey.contentEquals(other.identityPubKey)) return false
+        if (!ephemeralPubKey.contentEquals(other.ephemeralPubKey)) return false
+        if (!transcriptSignature.contentEquals(other.transcriptSignature)) return false
+
+        return true
+    }
+
+    override fun hashCode(): Int {
+        var result = suite
+        result = 31 * result + identityPubKey.contentHashCode()
+        result = 31 * result + ephemeralPubKey.contentHashCode()
+        result = 31 * result + transcriptSignature.contentHashCode()
+        return result
+    }
+}
+
+@OptIn(ExperimentalSerializationApi::class)
+@Serializable
+data class SecureConfirm(
+    @ProtoNumber(1)
+    val deviceName: String = ""
+)
+
+@OptIn(ExperimentalSerializationApi::class)
+@Serializable
+data class SecureResult(
+    @ProtoNumber(1)
+    val accepted: Boolean = false
+)
+
 // TCP handshake strings, matching HANDSHAKE_CLIENT_STR / HANDSHAKE_SERVER_STR in micyou-protocol
 const val HANDSHAKE_CLIENT = "MicYouCheck1"
 const val HANDSHAKE_SERVER = "MicYouCheck2"
 const val PACKET_MAGIC = 0x4D696359 // "MicY" in ASCII
 const val UDP_PACKET_MAGIC = 0x4D696355 // "MicU" in ASCII
+const val UDP_SECURE_MAGIC = 0x4D696356
+const val SECURE_SUITE_V1 = 1
+val SECURE_TRANSCRIPT_TAG: ByteArray = "MICYOU-SECURE-V1".toByteArray()
 /** ConnectMessage.platform 取值，与 micyou-core 的 ClientPlatform 对应 */
 const val CLIENT_PLATFORM = "android"
 /** TCP 控制帧负载上限，与 micyou-core 的 MAX_CONTROL_PAYLOAD_LEN 一致 */
@@ -242,5 +338,13 @@ data class MessageWrapper(
     // Cross-device plugin messaging (micyou-protocol network.proto field 7).
     // proto3 skips unknown fields, so legacy desktops simply ignore it.
     @ProtoNumber(7)
-    val pluginMessage: PluginMessage? = null
+    val pluginMessage: PluginMessage? = null,
+    @ProtoNumber(100)
+    val secureClientHello: SecureClientHello? = null,
+    @ProtoNumber(101)
+    val secureServerHello: SecureServerHello? = null,
+    @ProtoNumber(102)
+    val secureConfirm: SecureConfirm? = null,
+    @ProtoNumber(103)
+    val secureResult: SecureResult? = null
 )

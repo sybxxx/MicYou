@@ -24,7 +24,12 @@ function readGradleVersion() {
   };
 }
 
-function toSemver(version) {
+export function toSemver(version) {
+  // Keep valid prerelease/build metadata. In particular, +local.1 retains the
+  // stable host's plugin compatibility; converting it to -local1 would not.
+  if (/^\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/.test(version)) {
+    return version;
+  }
   const match = version.match(/^(\d+)\.(\d+)\.(\d+)(.*)?$/);
   if (match) {
     const [, major, minor, patch, pre] = match;
@@ -92,22 +97,24 @@ function updateCargoLock() {
   console.log('Updated Cargo.lock');
 }
 
-try {
-  const { version, versionCode } = readGradleVersion();
-  const semver = toSemver(version);
-  
-  console.log(`Gradle version: ${version} (code: ${versionCode})`);
-  console.log(`Semver: ${semver}`);
-  
-  updateTauriConfig(semver);
-  updateCargoToml(semver);
-  updateWorkspaceCargoToml(semver);
-  updateCargoLock();
-  updatePackageJson(semver);
-  updateInstallerIss(semver);
-  
-  console.log('Version sync completed!');
-} catch (error) {
-  console.error('Failed to sync version:', error.message);
-  process.exit(1);
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  try {
+    const { version, versionCode } = readGradleVersion();
+    const semver = toSemver(version);
+
+    console.log(`Gradle version: ${version} (code: ${versionCode})`);
+    console.log(`Semver: ${semver}`);
+
+    updateTauriConfig(semver);
+    updateCargoToml(semver);
+    updateWorkspaceCargoToml(semver);
+    updateCargoLock();
+    updatePackageJson(semver);
+    updateInstallerIss(semver);
+
+    console.log('Version sync completed!');
+  } catch (error) {
+    console.error('Failed to sync version:', error.message);
+    process.exit(1);
+  }
 }

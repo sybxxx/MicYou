@@ -1,19 +1,23 @@
-import { ref, computed, onMounted, watch, type Ref } from 'vue';
+import { ref, computed, onMounted, onUnmounted, watch, type Ref } from 'vue';
 import { useStorage } from '@vueuse/core';
 import { useI18n } from 'vue-i18n';
 import QRCode from 'qrcode';
 import { analyzeError, generateErrorDetails, type ConnectionErrorDetails } from '../utils/connectionError';
 import { muteSyncEnabled } from './useMuteSync';
+import { requireEncryption } from './useEncryption';
+import { connectionNotifications } from '../utils/connectionNotifications';
 import { isMacOS } from '@/shared/lib/os';
 import { useListeners } from '@/shared/lib/listeners';
 import {
   command,
-  notify,
+  notify as desktopNotify,
+  appWindow,
   onEvent,
   type AdbDevice,
   type ClientPlatform,
   type NetworkInfo,
   type NetworkInterfaceInfo,
+  type PairingRequest,
 } from '@/platform';
 
 // Connection modes supported by the application
@@ -39,7 +43,11 @@ function aecFailureNotificationKey(reason?: string | null) {
 /**
  * Composable for managing the connection server, IP configurations, modes, and device scanning
  */
-export function useServer(options?: { audioLevel?: Ref<number>; isMuted?: Ref<boolean> }) {
+export function useServer(options?: {
+  audioLevel?: Ref<number>;
+  isMuted?: Ref<boolean>;
+  showMainWindow?: () => Promise<void>;
+}) {
   const { t } = useI18n();
 
   // Current server connection state
@@ -56,6 +64,7 @@ export function useServer(options?: { audioLevel?: Ref<number>; isMuted?: Ref<bo
 
   // Preserve advanced origins configured in server.json when saving GUI prefs.
   let webAllowedOrigins: string[] = [];
+  let listenerWatchdog = true;
   
   // Number of clients currently connected to the Web interface
   const webClientCount = ref(0);
@@ -68,6 +77,14 @@ export function useServer(options?: { audioLevel?: Ref<number>; isMuted?: Ref<bo
   
   // Flag indicating if desktop OS notification alerts are enabled
   const notificationsEnabled = useStorage<boolean>('micyou_notifications', true);
+  const notificationMessage = ref<string | null>(null);
+  let notificationTimer: ReturnType<typeof setTimeout> | null = null;
+  const connectionAlerts = connectionNotifications((body) => void notify(body));
+  const pairingQueue = ref<PairingRequest[]>([]);
+  const currentPairingRequest = computed(() => pairingQueue.value[pairingQueue.value.length - 1] ?? null);
+  const pairingBusy = ref(false);
+  const sessionEncrypted = ref<boolean | null>(null);
+  const sessionUnencrypted = computed(() => sessionEncrypted.value === false);
   
   // Cache of primary network information returned by backend
   const networkInfo = ref<NetworkInfo | null>(null);
@@ -158,18 +175,53 @@ export function useServer(options?: { audioLevel?: Ref<number>; isMuted?: Ref<bo
     }
   }
 
+  function dismissNotification() {
+    if (notificationTimer !== null) clearTimeout(notificationTimer);
+    notificationTimer = null;
+    notificationMessage.value = null;
+  }
+
+  async function notify(body: string) {
+    if (!notificationsEnabled.value) return;
+    dismissNotification();
+    notificationMessage.value = body;
+    notificationTimer = setTimeout(dismissNotification, 5000);
+    try {
+      await desktopNotify(body);
+    } catch (error) {
+      console.warn('Desktop notification failed; the in-app message remains available:', error);
+    }
+  }
+
+  async function resolvePairing(accept: boolean) {
+    const request = currentPairingRequest.value;
+    if (!request || pairingBusy.value) return;
+    pairingBusy.value = true;
+    try {
+      const resolved = await command('resolve_pairing', { requestId: request.requestId, accept });
+      pairingQueue.value = pairingQueue.value.filter((item) => item.requestId !== request.requestId);
+      if (!resolved) void notify(t('app.pairing.expired'));
+    } catch (error) {
+      console.error('resolve_pairing failed:', error);
+      void notify(t('app.pairing.failed'));
+    } finally {
+      pairingBusy.value = false;
+    }
+  }
+
   function ensureStreamingState() {
     if (serverState.value === 'streaming') return;
     serverState.value = 'streaming';
-    if (notificationsEnabled.value) {
-      void notify(t('app.notify.connected'));
-    }
+    connectionAlerts.connected(t('app.notify.connected'));
   }
 
   function resetToIdle() {
     serverState.value = 'idle';
     activeConnectionMode.value = null;
     activePort.value = null;
+    sessionEncrypted.value = null;
+    pairingQueue.value = [];
+    connectionAlerts.reset();
     if (options?.audioLevel) options.audioLevel.value = 0;
   }
 
@@ -196,8 +248,7 @@ export function useServer(options?: { audioLevel?: Ref<number>; isMuted?: Ref<bo
     return Number(mode === 'web' ? webPort.value : serverPort.value);
   }
 
-  // USB mode goes through adb reverse which forwards to 127.0.0.1, so the
-  // server must listen on all interfaces regardless of the selected IP.
+  // USB ignores the saved LAN bind address; the core chooses loopback.
   function bindAddressFor(mode: ConnectionMode): string | null {
     return mode === 'usb' || isAutoBind.value ? null : selectedIp.value;
   }
@@ -212,6 +263,8 @@ export function useServer(options?: { audioLevel?: Ref<number>; isMuted?: Ref<bo
    * stop the server again and open the connection error dialog.
    */
   async function startServer(mode: ConnectionMode, port: number, deviceSerial: string | null = null) {
+    connectionAlerts.reset();
+    sessionEncrypted.value = null;
     serverState.value = 'starting';
     activeConnectionMode.value = mode;
     activePort.value = port;
@@ -251,6 +304,10 @@ export function useServer(options?: { audioLevel?: Ref<number>; isMuted?: Ref<bo
       if (status?.isConnected) {
         clientPlatform.value = status.platform;
         ensureStreamingState();
+        if (mode !== 'web') {
+          const security = await command('get_session_security').catch(() => null);
+          sessionEncrypted.value = security?.encrypted ?? null;
+        }
       } else if (serverState.value === 'starting') {
         serverState.value = 'connecting';
       }
@@ -352,6 +409,8 @@ export function useServer(options?: { audioLevel?: Ref<number>; isMuted?: Ref<bo
       if (prefs.port) serverPort.value = prefs.port;
       if (prefs.webPort) webPort.value = prefs.webPort;
       webAllowedOrigins = prefs.webAllowedOrigins ?? [];
+      listenerWatchdog = prefs.listenerWatchdog ?? true;
+      requireEncryption.value = prefs.requireEncryption ?? false;
       if (prefs.mode && ['wifi', 'usb', 'web'].includes(prefs.mode)) {
         connectionMode.value = prefs.mode as ConnectionMode;
       }
@@ -380,16 +439,18 @@ export function useServer(options?: { audioLevel?: Ref<number>; isMuted?: Ref<bo
           autoBind: isAutoBind.value,
           outputDevice: outputDevice.value || '',
           muteSync: muteSyncEnabled.value,
+          requireEncryption: requireEncryption.value,
+          listenerWatchdog,
         },
       }).catch((e) => console.error('Failed to save server prefs:', e));
     }, 500);
   }
   watch(
-    [connectionMode, serverPort, webPort, isAutoBind, selectedIp, outputDevice, muteSyncEnabled],
+    [connectionMode, serverPort, webPort, isAutoBind, selectedIp, outputDevice, muteSyncEnabled, requireEncryption],
     persistServerPrefs,
   );
 
-  /** A sign of life from the phone confirms a start that is still waiting. */
+  /** Web mode has its own client count; Wi-Fi/USB require device-connected. */
   function healPendingStart() {
     if (serverState.value === 'connecting' || serverState.value === 'starting') {
       ensureStreamingState();
@@ -411,10 +472,9 @@ export function useServer(options?: { audioLevel?: Ref<number>; isMuted?: Ref<bo
       return;
     }
     serverState.value = 'connecting';
+    sessionEncrypted.value = null;
     if (options?.audioLevel) options.audioLevel.value = 0;
-    if (wasStreaming && notificationsEnabled.value) {
-      void notify(t('app.notify.disconnected'));
-    }
+    if (wasStreaming) connectionAlerts.disconnected(t('app.notify.disconnected'));
   }
 
   // Registered before the initial status query so no transition that
@@ -431,10 +491,30 @@ export function useServer(options?: { audioLevel?: Ref<number>; isMuted?: Ref<bo
         resetToIdle();
         if (options?.isMuted) options.isMuted.value = false;
       })),
-      // Metrics only flow while a TCP session is up
-      track(onEvent('audio-metrics', healPendingStart)),
-      track(onEvent('audio-level', (payload) => {
-        if (payload > 0) healPendingStart();
+      // Only device-connected confirms that the primary output accepted audio.
+      // Control-channel metrics alone must never turn a silent session green.
+      track(onEvent('server-fault', ({ component }) => {
+        resetToIdle();
+        if (options?.isMuted) options.isMuted.value = false;
+        void notify(t('app.notify.serverFault', { component }));
+      })),
+      track(onEvent('udp_audio_warning', () => void notify(t('app.notify.udpAudioWarning')))),
+      track(onEvent('pairing-requested', (request) => {
+        // Retries from one phone replace its abandoned dialog, not other phones.
+        pairingQueue.value = pairingQueue.value.filter((item) => item.deviceName !== request.deviceName);
+        pairingQueue.value.push(request);
+        void notify(t('app.notify.pairingRequested', { device: request.deviceName }));
+        void (async () => {
+          await options?.showMainWindow?.();
+          await appWindow.requestPairingAttention();
+        })().catch((error) => console.warn('Could not foreground pairing request:', error));
+      })),
+      track(onEvent('pairing-completed', ({ deviceName }) => {
+        pairingQueue.value = pairingQueue.value.filter((item) => item.deviceName !== deviceName);
+        void notify(t('app.notify.paired', { device: deviceName }));
+      })),
+      track(onEvent('session-security', ({ encrypted }) => {
+        sessionEncrypted.value = encrypted;
       })),
       track(onEvent('web-client-count', (payload) => {
         webClientCount.value = payload;
@@ -488,6 +568,11 @@ export function useServer(options?: { audioLevel?: Ref<number>; isMuted?: Ref<bo
       if (status.isServerRunning) {
         serverState.value = status.isConnected ? 'streaming' : 'connecting';
         clientPlatform.value = status.platform;
+        connectionAlerts.restore(status.isConnected);
+        if (status.isConnected && connectionMode.value !== 'web') {
+          const security = await command('get_session_security').catch(() => null);
+          sessionEncrypted.value = security?.encrypted ?? null;
+        }
         activeConnectionMode.value = connectionMode.value;
         activePort.value = portFor(connectionMode.value);
         if (options?.isMuted) {
@@ -501,6 +586,12 @@ export function useServer(options?: { audioLevel?: Ref<number>; isMuted?: Ref<bo
     if (localStorage.getItem('micyou_auto_stream') === 'true' && serverState.value === 'idle') {
       void toggleStreaming();
     }
+  });
+
+  onUnmounted(() => {
+    dismissNotification();
+    connectionAlerts.reset();
+    if (prefsSaveTimer !== null) clearTimeout(prefsSaveTimer);
   });
 
   return {
@@ -526,6 +617,14 @@ export function useServer(options?: { audioLevel?: Ref<number>; isMuted?: Ref<bo
     outputDevice,
     showQrDialog,
     notificationsEnabled,
+    notificationMessage,
+    dismissNotification,
+    requireEncryption,
+    currentPairingRequest,
+    pairingBusy,
+    sessionUnencrypted,
+    sessionEncrypted,
+    resolvePairing,
     showIpSwitchConfirm,
     pendingIp,
     pendingAutoSelect,

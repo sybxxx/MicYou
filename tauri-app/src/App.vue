@@ -7,7 +7,7 @@ import { useI18n } from 'vue-i18n';
 import { 
   Mic, Wifi, RadioTower, Globe, ChevronDown, CheckCircle2, Settings, 
   Link, Unlink, RefreshCw, ActivitySquare as MonitoringIcon, X, Minus, 
-  VolumeX, Volume2, Headphones, QrCode as QrCodeIcon, Loader2 
+  VolumeX, Volume2, Headphones, QrCode as QrCodeIcon, Loader2, ShieldCheck, ShieldAlert
 } from '@lucide/vue';
 
 // Composables managing server connection, audio, theme, window, and system tray
@@ -20,12 +20,13 @@ import { useWindow } from './features/window/composables/useWindow';
 import { useTray } from './features/tray/useTray';
 import { useWindowEffects } from './features/window/composables/useWindowEffects';
 import { useWindowTransition } from './features/window/composables/useWindowTransition';
-import { applyPlatformClasses, isMacOS } from './shared/lib/os';
+import { applyPlatformClasses, isMacOS, isLinux } from './shared/lib/os';
 import { useAppMenu, type AppMenuState } from './features/window/composables/useAppMenu';
 
 // UI components for connection flows, onboarding, and layouts
 import ConnectionErrorDialog from './features/connection/components/ConnectionErrorDialog.vue';
 import QrCodeDialog from './features/connection/components/QrCodeDialog.vue';
+import PairingDialog from './features/connection/components/PairingDialog.vue';
 import AudioRing from './features/audio/components/AudioRing.vue';
 import MonitoringPanel from './features/audio/components/MonitoringPanel.vue';
 import OnboardingWizard from './features/onboarding/components/OnboardingWizard.vue';
@@ -49,7 +50,11 @@ const { t, locale } = useI18n();
 
 // Initialize shared features
 const audio = useAudio();
-const server = useServer({ audioLevel: audio.audioLevel, isMuted: audio.isMuted });
+const server = useServer({
+  audioLevel: audio.audioLevel,
+  isMuted: audio.isMuted,
+  showMainWindow: () => win.showMainWindow(),
+});
 const theme = useTheme();
 // The CLI/TUI read language and theme color from ui.json.
 onMounted(() => saveUiPrefs());
@@ -285,13 +290,15 @@ const pocketModalOpen = computed(
     server.showQrDialog.value ||
     server.showDeviceSelector.value ||
     server.showIpSwitchConfirm.value ||
+    server.currentPairingRequest.value !== null ||
     audio.showUdpWarning.value ||
     audio.showMonitoringWarning.value,
 );
 
-// Window sizing. Full mode is a fixed 800x600 window; pocket mode follows its
-// content, including the expanded menus, so no transparent area is left over.
+// Full mode remains resizable on Windows/macOS; pocket mode follows its
+// content and restores the user's full-mode size when leaving.
 const FULL_SIZE = { width: 800, height: 600 };
+let fullModeSize = { ...FULL_SIZE };
 const POCKET_PADDING = 12; // p-1.5 on both sides
 const POCKET_MIN_WIDTH = 240;
 
@@ -303,7 +310,8 @@ let pocketRaf = 0;
 // non-resizable windows on Wayland), so every resize moves the bounds too.
 async function applyFullSize() {
   try {
-    await appWindow.setFixedSize(FULL_SIZE.width, FULL_SIZE.height);
+    if (isLinux) await appWindow.setFixedSize(FULL_SIZE.width, FULL_SIZE.height);
+    else await appWindow.setResizableSize(fullModeSize.width, fullModeSize.height);
   } catch (e) {
     console.error('Failed to resize window:', e);
   }
@@ -367,6 +375,10 @@ watch(
   pocketMode,
   async (isPocket, wasPocket) => {
     if (isPocket) {
+      if (wasPocket === false && !isLinux) {
+        try { fullModeSize = await appWindow.logicalSize(); }
+        catch (error) { console.warn('Could not remember full window size:', error); }
+      }
       if (pocketModalOpen.value) await applyFullSize();
       else await enterPocketLayout();
     } else {
@@ -457,6 +469,7 @@ onUnmounted(() => {
           :isMuted="audio.isMuted.value"
           :isMonitoringEnabled="audio.isMonitoringEnabled.value"
           :isMacOS="isMacOS"
+          :sessionEncrypted="server.sessionEncrypted.value"
           @toggleStream="toggleStreaming"
           @selectIp="(ip, auto) => server.selectIp(ip, auto)"
           @updateMode="m => server.connectionMode.value = m"
@@ -552,6 +565,16 @@ onUnmounted(() => {
       </div>
 
       <!-- Main Content -->
+      <div
+        v-if="server.serverState.value === 'streaming' && server.sessionEncrypted.value !== null"
+        class="flex items-center gap-2 rounded-xl border px-4 py-2 text-xs shrink-0"
+        :class="server.sessionUnencrypted.value ? 'border-error/30 bg-error/5 text-error' : 'border-primary/20 bg-primary/5 text-primary'"
+        role="status"
+      >
+        <ShieldAlert v-if="server.sessionUnencrypted.value" class="h-4 w-4 shrink-0" />
+        <ShieldCheck v-else class="h-4 w-4 shrink-0" />
+        {{ $t(server.sessionUnencrypted.value ? 'app.security.unencryptedBanner' : 'app.security.encryptedBanner') }}
+      </div>
       <div class="relative flex flex-1 gap-3 min-h-0">
         <!-- Left Panel -->
         <div class="flex flex-col gap-3 transition-all duration-300" :class="audio.showMonitoringPanel.value ? 'w-[28%]' : 'w-[38%]'">
@@ -703,6 +726,22 @@ onUnmounted(() => {
     </div>
 
 
+
+    <PairingDialog
+      :request="server.currentPairingRequest.value"
+      :busy="server.pairingBusy.value"
+      @approve="server.resolvePairing(true)"
+      @deny="server.resolvePairing(false)"
+    />
+
+    <div
+      v-if="server.notificationMessage.value"
+      role="status"
+      class="fixed bottom-4 left-4 right-4 z-90 mx-auto flex max-w-lg items-center gap-3 rounded-2xl border border-primary/20 bg-surface-bright px-4 py-3 text-sm text-on-surface shadow-lg"
+    >
+      <span class="min-w-0 flex-1 break-words">{{ server.notificationMessage.value }}</span>
+      <button :aria-label="$t('dialogs.close')" class="shrink-0 rounded-full p-1 hover:bg-surface-variant/50" @click="server.dismissNotification()"><X class="h-4 w-4" /></button>
+    </div>
 
     <UdpWarningDialog
       :show="audio.showUdpWarning.value"

@@ -89,8 +89,17 @@ MicYou executable.
 ```bash
 cd tauri-app
 bun run tauri dev    # development
-bun run tauri build  # release bundles (NSIS installer on Windows, .deb/.rpm/.AppImage on Linux, .dmg on macOS)
+bun run tauri build --no-bundle  # Windows executables; see the Inno Setup command below
 ```
+
+Windows releases and user installations use Inno Setup, not the Tauri NSIS bundle:
+
+```powershell
+iscc tauri-app/src-tauri/installer.iss # from the repository root, after the executable/sidecar build
+```
+
+The installer is written to `tauri-app/src-tauri/target/release/bundle/inno/`.
+On Linux and macOS, `bun run tauri build` produces the platform bundles.
 
 ### CLI and TUI servers
 

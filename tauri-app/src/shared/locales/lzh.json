@@ -53,7 +53,11 @@
       "aecDisabledPipeWireUnavailable": "PipeWire 不可用，AEC 已自停。",
       "aecDisabledReferenceLost": "AEC 音频参考流已断，已自停。",
       "aecDisabledUnsupportedOs": "此系统版本不能取系统之声，AEC 已自停。",
-      "aecDisabledVirtualSourceMissing": "虚拟音源不存，AEC 已自停。"
+      "aecDisabledVirtualSourceMissing": "虚拟音源不存，AEC 已自停。",
+      "pairingRequested": "有器 {device} 求配——盍往 MicYou 之窗，校其码而许之。",
+      "paired": "{device} 相配已成。",
+      "serverFault": "桌面音频服务故障矣（{component}）。",
+      "udpAudioWarning": "未收手机音频，候其复连矣。"
     },
     "ipSelector": {
       "allInterfaces": "诸网",
@@ -80,6 +84,21 @@
       "bitrate": "比特之率",
       "totalLatency": "总延迟",
       "buffer": "缓冲"
+    },
+    "pairing": {
+      "title": "相配之请",
+      "deviceWantsToPair": "{name} 欲与此机相配。",
+      "compareCode": "必先较对手机所示之码，合而后许之。",
+      "approve": "许",
+      "deny": "拒",
+      "expired": "配對之請已逾時，請重連手機，核驗新碼。",
+      "failed": "配對之議未能送達，請重試。"
+    },
+    "security": {
+      "requireEncryption": "Wi-Fi 客户端须加密而后通",
+      "requireEncryptionDesc": "拒未加密之 Wi-Fi 客端；更改後須重啟傳輸。",
+      "unencryptedBanner": "今之会话，未经加密",
+      "encryptedBanner": "此會話已加密"
     }
   },
   "settings": {

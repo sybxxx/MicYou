@@ -36,6 +36,10 @@ pub trait ServerEvents: Send + Sync + 'static {
     fn aec_status_changed(&self, status: AecStatus);
     fn monitoring_state_changed(&self, enabled: bool);
     fn plugin_download_progress(&self, progress: DownloadProgress);
+    fn server_fault(&self, _component: String, _message: String) {}
+    fn pairing_requested(&self, _request: PairingRequestInfo) {}
+    fn pairing_completed(&self, _device_name: String) {}
+    fn session_security_changed(&self, _encrypted: bool) {}
 }
 
 #[derive(serde::Serialize, Clone, Debug)]
@@ -60,3 +64,11 @@ pub struct DownloadProgress {
 }
 
 pub type SharedEvents = Arc<dyn ServerEvents>;
+
+#[derive(serde::Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct PairingRequestInfo {
+    pub request_id: String,
+    pub device_name: String,
+    pub sas: String,
+}

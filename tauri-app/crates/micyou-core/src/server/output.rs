@@ -40,6 +40,13 @@ const STALL_TIMEOUT: Duration = Duration::from_secs(2);
 enum AudioOutputCommand {
     Open(Option<String>, usize, Sender<bool>),
     Push(Vec<f32>, usize),
+    PushTracked(
+        Vec<f32>,
+        usize,
+        u64,
+        crate::transport::udp::SharedActiveAudioSession,
+        Instant,
+    ),
     PushSound(Vec<f32>, f32),
     SetMonitoring(bool),
     Shutdown,
@@ -146,6 +153,8 @@ pub struct AudioOutputHandle {
     /// the device thread on every command and health tick. The audio thread reads it per
     /// packet, so it must never wait on a device thread busy reopening.
     queued_ms: Arc<AtomicU64>,
+    accepted_epoch: Arc<AtomicU64>,
+    accepted_at_ms: Arc<AtomicU64>,
     thread: std::sync::Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
@@ -161,6 +170,10 @@ impl AudioOutputHandle {
         let (tx, rx) = mpsc::channel::<AudioOutputCommand>();
         let queued_ms = Arc::new(AtomicU64::new(0));
         let published = queued_ms.clone();
+        let accepted_epoch = Arc::new(AtomicU64::new(0));
+        let accepted_at_ms = Arc::new(AtomicU64::new(0));
+        let output_epoch = accepted_epoch.clone();
+        let output_accepted = accepted_at_ms.clone();
         let thread = std::thread::Builder::new()
             .name("micyou-output".into())
             .spawn(move || {
@@ -195,6 +208,40 @@ impl AudioOutputHandle {
                         Ok(AudioOutputCommand::Push(data, channels)) => {
                             manager.push_audio_data(&data, channels);
                         }
+                        Ok(AudioOutputCommand::PushTracked(
+                            data,
+                            channels,
+                            epoch,
+                            session,
+                            queued_at,
+                        )) => {
+                            // Do not play stale output commands after a reconnect or
+                            // while the output device was busy reopening.
+                            let active = session.read().unwrap_or_else(|p| p.into_inner());
+                            let current = match *active {
+                                crate::transport::udp::ActiveAudioSession::Bound {
+                                    epoch, ..
+                                }
+                                | crate::transport::udp::ActiveAudioSession::UnboundLegacy {
+                                    epoch,
+                                    ..
+                                } => epoch,
+                                _ => 0,
+                            };
+                            if current != epoch || queued_at.elapsed() > Duration::from_millis(250)
+                            {
+                                continue;
+                            }
+                            let before = manager.queued_ms();
+                            manager.push_audio_data(&data, channels);
+                            // A command merely reaching this thread is insufficient:
+                            // the primary ring must actually have accepted samples.
+                            if manager.is_open() && manager.queued_ms() > before {
+                                output_accepted
+                                    .store(crate::stats::unix_millis(), Ordering::Relaxed);
+                                output_epoch.store(epoch, Ordering::Release);
+                            }
+                        }
                         Ok(AudioOutputCommand::PushSound(samples, gain)) => {
                             manager.push_sound_effect(samples, gain);
                         }
@@ -215,6 +262,8 @@ impl AudioOutputHandle {
         Self {
             tx,
             queued_ms,
+            accepted_epoch,
+            accepted_at_ms,
             thread: std::sync::Mutex::new(thread),
         }
     }
@@ -245,6 +294,27 @@ impl AudioOutputHandle {
     /// so this never blocks or drops audio while the device thread lives.
     pub fn push(&self, data: Vec<f32>, channels: usize) {
         let _ = self.tx.send(AudioOutputCommand::Push(data, channels));
+    }
+
+    pub fn push_tracked(
+        &self,
+        data: Vec<f32>,
+        channels: usize,
+        epoch: u64,
+        session: crate::transport::udp::SharedActiveAudioSession,
+    ) {
+        let _ = self.tx.send(AudioOutputCommand::PushTracked(
+            data,
+            channels,
+            epoch,
+            session,
+            Instant::now(),
+        ));
+    }
+
+    pub fn accepted_at(&self, epoch: u64) -> Option<u64> {
+        (self.accepted_epoch.load(Ordering::Acquire) == epoch)
+            .then(|| self.accepted_at_ms.load(Ordering::Relaxed))
     }
 
     /// Queue a plugin sound effect; mixed into the virtual mic output stream

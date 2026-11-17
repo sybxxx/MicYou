@@ -13,7 +13,9 @@
  * GNU General Public License for more details.
  */
 
-use micyou_core::events::{AecStatus, DownloadProgress, ServerEvents, SpectrumPayload};
+use micyou_core::events::{
+    AecStatus, DownloadProgress, PairingRequestInfo, ServerEvents, SpectrumPayload,
+};
 use micyou_core::stats::AudioMetrics;
 use micyou_core::transport::tcp::DeviceInfo;
 
@@ -98,7 +100,36 @@ impl ServerEvents for CliEventSink {
 
     fn plugin_download_progress(&self, progress: DownloadProgress) {
         if progress.done {
-            println!("[plugins] downloaded {} ({} bytes)", progress.id, progress.downloaded);
+            println!(
+                "[plugins] downloaded {} ({} bytes)",
+                progress.id, progress.downloaded
+            );
         }
+    }
+
+    fn server_fault(&self, component: String, message: String) {
+        eprintln!("[error] {component}: {message}");
+    }
+
+    fn pairing_requested(&self, request: PairingRequestInfo) {
+        println!(
+            "[pairing] {}: verify SAS {}",
+            request.device_name, request.sas
+        );
+    }
+
+    fn pairing_completed(&self, device_name: String) {
+        println!("[pairing] paired: {device_name}");
+    }
+
+    fn session_security_changed(&self, encrypted: bool) {
+        println!(
+            "[security] {}",
+            if encrypted {
+                "encrypted"
+            } else {
+                "unencrypted"
+            }
+        );
     }
 }

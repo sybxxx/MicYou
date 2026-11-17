@@ -165,6 +165,8 @@ pub fn run() {
             commands::server::start_server,
             commands::server::stop_server,
             commands::server::get_streaming_status,
+            commands::server::get_session_security,
+            commands::server::resolve_pairing,
             commands::server::set_mute_state,
             commands::server::set_monitoring,
             commands::server::set_spectrum_streaming,

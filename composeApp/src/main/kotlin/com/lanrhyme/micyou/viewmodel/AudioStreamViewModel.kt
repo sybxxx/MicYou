@@ -39,6 +39,8 @@ import com.lanrhyme.micyou.network.ConnectionErrorDetails
 import com.lanrhyme.micyou.network.ConnectionErrorHelper
 import com.lanrhyme.micyou.network.DeviceDiscoveryManager
 import com.lanrhyme.micyou.network.DiscoveredDevice
+import com.lanrhyme.micyou.network.WifiNetworkMonitor
+import com.lanrhyme.micyou.network.selectSingleDiscoveredDevice
 import com.lanrhyme.micyou.settings.Settings
 import com.lanrhyme.micyou.settings.SettingsFactory
 import com.lanrhyme.micyou.R
@@ -67,7 +69,9 @@ data class AudioStreamUiState(
     // UDP Warning Dialog State
     val showUdpWarningDialog: Boolean = false,
 
-    val androidAudioSourceName: String = "Mic"
+    val androidAudioSourceName: String = "Mic",
+    val isEncrypted: Boolean = false,
+    val pairingPrompt: AudioEngine.PairingPrompt? = null
 )
 
 class AudioStreamViewModel : ViewModel() {
@@ -98,6 +102,7 @@ class AudioStreamViewModel : ViewModel() {
 
     // 设备发现
     private val discoveryManager = DeviceDiscoveryManager()
+    private val wifiNetworkMonitor = WifiNetworkMonitor()
     val discoveredDevices: StateFlow<List<DiscoveredDevice>> = discoveryManager.discoveredDevices
     val isDiscovering: StateFlow<Boolean> = discoveryManager.isDiscovering
 
@@ -114,6 +119,26 @@ class AudioStreamViewModel : ViewModel() {
     init {
         loadSettings()
         setupAudioEngineObservers()
+        auxiliaryScope.launch {
+            wifiNetworkMonitor.networkAvailableEvents.collect {
+                if (closed.get() || _uiState.value.mode != ConnectionMode.Wifi) return@collect
+                discoveryManager.stopDiscovery()
+                discoveryManager.startDiscovery()
+                _audioEngine.wakeupReconnect()
+            }
+        }
+        wifiNetworkMonitor.start()
+        auxiliaryScope.launch {
+            discoveryManager.discoveredDevices.collect { devices ->
+                if (closed.get() || _uiState.value.mode != ConnectionMode.Wifi) return@collect
+                selectSingleDiscoveredDevice(devices)?.let { device ->
+                    _uiState.update { it.copy(ipAddress = device.hostAddress, port = device.port.toString()) }
+                    settings.putString("ip_address", device.hostAddress)
+                    settings.putString("port", device.port.toString())
+                    _audioEngine.updateTarget(device.hostAddress, device.port)
+                }
+            }
+        }
         if (_uiState.value.mode == ConnectionMode.Wifi) {
             discoveryManager.startDiscovery()
         }
@@ -193,12 +218,22 @@ class AudioStreamViewModel : ViewModel() {
             }
         }
 
+        auxiliaryScope.launch {
+            _audioEngine.sessionEncrypted.collect { encrypted ->
+                _uiState.update { it.copy(isEncrypted = encrypted) }
+            }
+        }
+        auxiliaryScope.launch {
+            _audioEngine.pairingPrompt.collect { prompt ->
+                _uiState.update { it.copy(pairingPrompt = prompt) }
+            }
+        }
         // Auto-start handled via MainViewModel
     }
 
     private fun applyAutoConfig() {
         setSampleRate(SampleRate.Rate48000)
-        setChannelCount(ChannelCount.Stereo)
+        setChannelCount(ChannelCount.Mono)
         setAudioFormat(AudioFormat.PCM_16BIT)
     }
 
@@ -209,6 +244,8 @@ class AudioStreamViewModel : ViewModel() {
             startStream()
         }
     }
+
+    fun answerPairingPrompt(accepted: Boolean) = _audioEngine.answerPairingPrompt(accepted)
 
     fun toggleMute() {
         val newMuteState = !_uiState.value.isMuted
@@ -529,7 +566,7 @@ class AudioStreamViewModel : ViewModel() {
      * many minutes until the user stops or the connection comes back.
      */
     private fun scheduleAutoReconnect() {
-        if (!autoReconnectEnabled()) return
+        if (!autoReconnectEnabled() || !_audioEngine.canRetryLastFailure()) return
         if (reconnectJob?.isActive == true) return
         val generation = ++reconnectGeneration
         reconnectJob = auxiliaryScope.launch {
@@ -610,6 +647,7 @@ class AudioStreamViewModel : ViewModel() {
         closeJob?.let { return@synchronized it }
         closed.set(true)
         discoveryManager.stopDiscovery()
+        wifiNetworkMonitor.stop()
         val engineCloseJob = _audioEngine.close()
         auxiliaryScope.cancel()
         closeJob = engineCloseJob

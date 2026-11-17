@@ -400,4 +400,11 @@
     <string name="qs_toast_stopped">Streaming stopped</string>
     <string name="firstLaunchDownloadPc">下载电脑端喵~</string>
     <string name="errorSuggestionCheckSettings">检查系统设置中的应用权限喵~</string>
+    <string name="securityBadgeEncrypted">已加密喵</string>
+    <string name="securityBadgeUnencrypted">未加密喵</string>
+    <string name="pairingTitle">有设备想配对喵~</string>
+    <string name="pairingMessage">%1$s 的新设备请求加密连接喵~请核对这段代码和电脑上显示的是否一样喵~</string>
+    <string name="pairingHint">两边代码完全一样才能放行喵~</string>
+    <string name="pairingApprove">代码一致喵~</string>
+    <string name="pairingDeny">拒绝喵~</string>
 </resources>

@@ -33,6 +33,13 @@ export function isVisible(): Promise<boolean> {
   return getCurrentWindow().isVisible();
 }
 
+/** Draws attention to a pairing request without changing the close policy. */
+export async function requestPairingAttention(): Promise<void> {
+  const win = getCurrentWindow();
+  await win.setFocus();
+  await win.requestUserAttention(1);
+}
+
 export function onFocusChanged(handler: (focused: boolean) => void): Promise<UnlistenFn> {
   return getCurrentWindow().onFocusChanged(({ payload }) => handler(payload));
 }
@@ -57,6 +64,22 @@ export async function setFixedSize(width: number, height: number): Promise<void>
   await win.setSize(size);
   await win.setMinSize(size);
   await win.setMaxSize(size);
+}
+
+export async function logicalSize(): Promise<{ width: number; height: number }> {
+  const win = getCurrentWindow();
+  const [size, scale] = await Promise.all([win.innerSize(), win.scaleFactor()]);
+  return { width: size.width / scale, height: size.height / scale };
+}
+
+/** Full mode stays resizable; pocket mode can temporarily pin its bounds. */
+export async function setResizableSize(width: number, height: number): Promise<void> {
+  const win = getCurrentWindow();
+  await win.setMinSize(null);
+  await win.setMaxSize(null);
+  await win.setResizable(true);
+  await win.setSize(new LogicalSize(Math.max(width, 720), Math.max(height, 560)));
+  await win.setMinSize(new LogicalSize(720, 560));
 }
 
 export type FileDropEvent =

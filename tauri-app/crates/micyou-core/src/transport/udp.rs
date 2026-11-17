@@ -140,11 +140,13 @@ pub async fn start_udp_server(
     cancel_token: CancellationToken,
     stats: std::sync::Arc<crate::stats::NetworkStats>,
     active_audio_session: SharedActiveAudioSession,
+    session_crypto_slot: crate::pairing::SharedSessionCrypto,
+    mut rebind_requests: tokio::sync::watch::Receiver<u64>,
     ready: tokio::sync::oneshot::Sender<Result<(), String>>,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     let bound = crate::transport::net_bind::bind_udp_socket(&bind_address, port)
         .and_then(UdpSocket::from_std);
-    let socket = match bound {
+    let mut socket = match bound {
         Ok(socket) => socket,
         Err(error) => {
             let _ = ready.send(Err(error.to_string()));
@@ -157,8 +159,9 @@ pub async fn start_udp_server(
     // (the audio-session gate compares TCP peer IP against UDP source IP).
     // Failure is non-fatal and only logged. Bound BEFORE signalling ready so
     // no datagram window is missed.
-    let v6_socket = if crate::transport::net_bind::wants_v6_companion(&bind_address) {
-        match crate::transport::net_bind::bind_udp_socket_v6only(port).and_then(UdpSocket::from_std) {
+    let mut v6_socket = if crate::transport::net_bind::wants_v6_companion(&bind_address) {
+        match crate::transport::net_bind::bind_udp_socket_v6only(port).and_then(UdpSocket::from_std)
+        {
             Ok(socket) => {
                 log::info!(
                     "UDP Audio Server also listening on [::]:{} (IPv6 companion)",
@@ -199,6 +202,17 @@ pub async fn start_udp_server(
                 log::info!("UDP Server cancelled");
                 break;
             }
+            result = rebind_requests.changed() => {
+                if result.is_err() { break; }
+                drop(socket);
+                drop(v6_socket);
+                let Some(rebuilt) = rebuild_udp_socket(&bind_address, port, &cancel_token).await else { break; };
+                socket = rebuilt;
+                v6_socket = if crate::transport::net_bind::wants_v6_companion(&bind_address) {
+                    crate::transport::net_bind::bind_udp_socket_v6only(port).and_then(UdpSocket::from_std).ok()
+                } else { None };
+                if v6_socket.is_some() && buf_v6.is_empty() { buf_v6.resize(65535, 0); }
+            }
             recv_result = crate::transport::net_bind::recv_from_either(&socket, v6_socket.as_ref(), &mut buf, &mut buf_v6) => {
                 let (len, addr, from_v6) = match recv_result {
                     Ok(res) => res,
@@ -212,10 +226,15 @@ pub async fn start_udp_server(
                 // net_bind::recv_from_either); everything below is the
                 // untouched legacy processing, family-agnostic via addr.ip().
                 let recv_buf = if from_v6 { &buf_v6[..len] } else { &buf[..len] };
-                let Some(payload) = parse_datagram(recv_buf) else {
-                    continue;
-                };
-                match MessageWrapper::decode(payload) {
+                let crypto = session_crypto_slot.lock().await.clone();
+                let payload = if let Some(crypto) = crypto {
+                    // A secure active session never accepts unsealed datagrams,
+                    // including packets injected from its own peer IP.
+                    if crypto.peer_ip != addr.ip() { continue; }
+                    crypto.udp.open(recv_buf).ok()
+                } else { parse_datagram(recv_buf).map(<[u8]>::to_vec) };
+                let Some(payload) = payload else { continue; };
+                match MessageWrapper::decode(payload.as_slice()) {
                     Ok(msg) => {
                         if let Some(audio_packet_ordered) = msg.audio_packet {
                             if !validate_audio_packet(&audio_packet_ordered) {
@@ -228,9 +247,17 @@ pub async fn start_udp_server(
                             ) else {
                                 continue;
                             };
-                            stats.mark_udp_received(crate::stats::unix_millis());
-                            stats.mark_audio_received(crate::stats::unix_millis());
-                            meter.observe(&stats, epoch, &audio_packet_ordered, payload.len());
+                            {
+                                let current = active_audio_session.read().unwrap_or_else(|p| p.into_inner());
+                                let current_epoch = match *current {
+                                    ActiveAudioSession::Bound { epoch, .. } | ActiveAudioSession::UnboundLegacy { epoch, .. } => epoch,
+                                    ActiveAudioSession::Inactive => 0,
+                                };
+                                if current_epoch != epoch { continue; }
+                                stats.mark_udp_received(crate::stats::unix_millis());
+                                stats.mark_audio_received(crate::stats::unix_millis());
+                                meter.observe(&stats, epoch, &audio_packet_ordered, payload.len());
+                            }
 
                             match tx.try_send(AudioStreamEvent::Packet {
                                 packet: audio_packet_ordered,
@@ -249,6 +276,24 @@ pub async fn start_udp_server(
         }
     }
     Ok(())
+}
+
+async fn rebuild_udp_socket(bind: &str, port: u16, token: &CancellationToken) -> Option<UdpSocket> {
+    loop {
+        match crate::transport::net_bind::bind_udp_socket(bind, port).and_then(UdpSocket::from_std)
+        {
+            Ok(socket) => return Some(socket),
+            Err(error) => log::warn!("UDP socket rebuild failed: {error}"),
+        }
+        if crate::listener_watchdog::wait_or_cancel(
+            crate::listener_watchdog::REBIND_RETRY_INTERVAL,
+            token,
+        )
+        .await
+        {
+            return None;
+        }
+    }
 }
 
 #[cfg(test)]

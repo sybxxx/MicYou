@@ -23,7 +23,14 @@ pub struct NetworkManager {
 }
 
 impl NetworkManager {
-    pub fn start_mdns(port: u16, bind_address: &str) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+    pub fn current_best_ip() -> Option<std::net::IpAddr> {
+        Self::get_best_ip()?.parse().ok()
+    }
+
+    pub fn start_mdns(
+        port: u16,
+        bind_address: &str,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         Self::start_mdns_helper(bind_address, port, MDNS_SERVICE_TYPE)
     }
 
@@ -44,7 +51,12 @@ impl NetworkManager {
     fn get_best_ip() -> Option<String> {
         query_network_interfaces()
             .into_iter()
-            .find(|iface| iface.ip.parse::<std::net::Ipv4Addr>().is_ok_and(|ip| !ip.is_loopback()))
+            .find(|iface| {
+                iface
+                    .ip
+                    .parse::<std::net::Ipv4Addr>()
+                    .is_ok_and(|ip| !ip.is_loopback())
+            })
             .map(|iface| iface.ip)
             .or_else(|| local_ip_address::local_ip().map(|ip| ip.to_string()).ok())
     }

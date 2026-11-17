@@ -53,7 +53,11 @@
       "aecDisabledPipeWireUnavailable": "PipeWire 不可用项，AEC 已自动停用项",
       "aecDisabledReferenceLost": "AEC 音频参考流已中断项，已自动停用项",
       "aecDisabledUnsupportedOs": "当前系统版本无法采集系统音频项，AEC 已自动停用项",
-      "aecDisabledVirtualSourceMissing": "未找到虚拟音频源项，AEC 已自动停用项"
+      "aecDisabledVirtualSourceMissing": "未找到虚拟音频源项，AEC 已自动停用项",
+      "pairingRequested": "设备 {device} 请求配对——请在 MicYou 窗口中核对配对码并点击允许",
+      "paired": "{device} 配对完成项。",
+      "serverFault": "桌面音频服务发生故障（{component}）。",
+      "udpAudioWarning": "未收到手机音频数据，正在等待重新连接。"
     },
     "ipSelector": {
       "allInterfaces": "全部",
@@ -80,6 +84,21 @@
       "bitrate": "监测实时比特率项",
       "totalLatency": "监测总估算延迟项",
       "buffer": "监测缓冲区时长项"
+    },
+    "pairing": {
+      "title": "配对请求项",
+      "deviceWantsToPair": "{name} 想与本机配对项。",
+      "compareCode": "须核对手机显示代码项，一致方可允许。",
+      "approve": "允许",
+      "deny": "拒绝",
+      "expired": "配对请求过期了，重新连接手机，核对新代码。",
+      "failed": "配对决定没提交成功，再试一次。"
+    },
+    "security": {
+      "requireEncryption": "要求 Wi-Fi 客户端加密项",
+      "requireEncryptionDesc": "拒绝未加密的 Wi-Fi 客户端；改完重新开始传输才生效。",
+      "unencryptedBanner": "当前会话未加密项",
+      "encryptedBanner": "当前会话已加密"
     }
   },
   "settings": {

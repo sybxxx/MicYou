@@ -243,6 +243,8 @@ dependencies {
         }
     }
     implementation(libs.concentus)
+    implementation("com.google.crypto.tink:tink-android:1.16.0")
+    testImplementation(libs.kotlin.test.junit)
 
     debugImplementation(libs.androidx.compose.ui.tooling)
 }

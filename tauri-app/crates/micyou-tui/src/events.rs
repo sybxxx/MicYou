@@ -13,7 +13,9 @@
  * GNU General Public License for more details.
  */
 
-use micyou_core::events::{AecStatus, DownloadProgress, ServerEvents, SpectrumPayload};
+use micyou_core::events::{
+    AecStatus, DownloadProgress, PairingRequestInfo, ServerEvents, SpectrumPayload,
+};
 use micyou_core::stats::AudioMetrics;
 use micyou_core::transport::tcp::DeviceInfo;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -146,4 +148,34 @@ impl ServerEvents for TuiEventSink {
     fn monitoring_state_changed(&self, _enabled: bool) {}
 
     fn plugin_download_progress(&self, _progress: DownloadProgress) {}
+
+    fn server_fault(&self, component: String, message: String) {
+        let _ = self
+            .tx
+            .send(Event::Log(format!("[error] {component}: {message}")));
+    }
+
+    fn pairing_requested(&self, request: PairingRequestInfo) {
+        let _ = self.tx.send(Event::Log(format!(
+            "[pairing] {}: verify SAS {}",
+            request.device_name, request.sas
+        )));
+    }
+
+    fn pairing_completed(&self, device_name: String) {
+        let _ = self
+            .tx
+            .send(Event::Log(format!("[pairing] paired: {device_name}")));
+    }
+
+    fn session_security_changed(&self, encrypted: bool) {
+        let _ = self.tx.send(Event::Log(format!(
+            "[security] {}",
+            if encrypted {
+                "encrypted"
+            } else {
+                "unencrypted"
+            }
+        )));
+    }
 }

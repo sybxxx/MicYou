@@ -415,4 +415,11 @@
     <string name="soundpadVolume">音量</string>
     <string name="soundpadBack">返回上级</string>
     <string name="soundpadFolderCount">%1$d 项</string>
+    <string name="securityBadgeEncrypted">已加密</string>
+    <string name="securityBadgeUnencrypted">未加密</string>
+    <string name="pairingTitle">配对请求</string>
+    <string name="pairingMessage">%1$s 的新设备请求加密连接。请核对此代码与电脑上显示的是否一致。</string>
+    <string name="pairingHint">只有两边代码完全一致才可放行。</string>
+    <string name="pairingApprove">代码一致</string>
+    <string name="pairingDeny">拒绝</string>
 </resources>

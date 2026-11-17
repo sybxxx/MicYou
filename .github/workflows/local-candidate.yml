@@ -1,0 +1,143 @@
+name: Local Candidate Build
+
+on:
+  push:
+    branches: [codex/stable-2.2-migration]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: local-candidate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    env:
+      CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
+    defaults:
+      run:
+        working-directory: tauri-app
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: tauri-app/package.json
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tauri-app -> target
+          cache-on-failure: true
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-about@0.9.1
+      - name: Install frontend dependencies
+        run: bun install --frozen-lockfile
+      - name: Frontend regression tests
+        run: bun run test:web
+      - name: Frontend types and production assets
+        run: bun run build
+      - name: Install cloud browser
+        run: bun x playwright install chromium
+      - name: Desktop UI smoke and screenshots
+        shell: pwsh
+        run: |
+          $preview = Start-Process -FilePath (Get-Command node).Source -ArgumentList @('node_modules/vite/bin/vite.js', 'preview', '--host', '127.0.0.1', '--port', '1431', '--strictPort') -WindowStyle Hidden -PassThru
+          try {
+            $ready = $false
+            for ($attempt = 0; $attempt -lt 30; $attempt++) {
+              if ($preview.HasExited) { throw 'Owned preview server exited before readiness' }
+              try {
+                Invoke-WebRequest 'http://127.0.0.1:1431' -TimeoutSec 2 | Out-Null
+                $ready = $true
+                break
+              } catch { Start-Sleep -Seconds 1 }
+            }
+            if (-not $ready) { throw 'Preview server was not ready within the bounded wait' }
+            node tests/desktop-ui-smoke.mjs
+            if ($LASTEXITCODE -ne 0) { throw 'Desktop UI smoke failed' }
+          } finally {
+            if (-not $preview.HasExited) { $preview.Kill() }
+            $preview.Dispose()
+          }
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: MicYou-UI-${{ github.sha }}
+          path: tauri-app/output/playwright/desktop-migration/
+          if-no-files-found: ignore
+          retention-days: 1
+      - name: Rust workspace tests and clippy
+        shell: pwsh
+        run: |
+          $env:APPDATA = Join-Path $env:RUNNER_TEMP 'micyou-test-appdata'
+          New-Item -ItemType Directory -Force $env:APPDATA | Out-Null
+          # The tests do not package terminal sidecars; the real build below does.
+          $env:TAURI_CONFIG = '{"bundle":{"externalBin":[]}}'
+          cargo test --workspace --release --locked
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo clippy --workspace --all-targets --release --locked
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build desktop and terminal sidecars
+        run: bun run tauri build --no-bundle
+      - name: Build Inno Setup installer
+        shell: pwsh
+        run: iscc src-tauri/installer.iss
+      - uses: actions/upload-artifact@v7
+        with:
+          name: MicYou-Windows-${{ github.sha }}
+          path: tauri-app/src-tauri/target/release/bundle/inno/*.exe
+          if-no-files-found: error
+          retention-days: 1
+
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v5
+        with:
+          java-version: '21'
+          distribution: liberica
+      - uses: gradle/actions/setup-gradle@v6
+      - name: Prepare Android SDK
+        run: sdkmanager 'platforms;android-37.0' 'build-tools;36.1.0'
+      - name: Prepare existing release signing
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          test -n "$ANDROID_KEYSTORE_BASE64"
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/micyou-release.keystore"
+      - name: Android unit tests and signed release APK
+        env:
+          ANDROID_KEYSTORE_PATH: ${{ runner.temp }}/micyou-release.keystore
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          chmod +x gradlew
+          ./gradlew :composeApp:testDebugUnitTest :composeApp:assembleRelease --no-daemon --console=plain
+      - name: Verify release APK exists
+        run: test -n "$(find composeApp/build/outputs/apk/release -name '*.apk' ! -name '*unsigned*' -print -quit)"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: MicYou-Android-${{ github.sha }}
+          path: composeApp/build/outputs/apk/release/*.apk
+          if-no-files-found: error
+          retention-days: 1
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: MicYou-Android-test-results-${{ github.sha }}
+          path: composeApp/build/reports/tests/
+          retention-days: 1
+          if-no-files-found: ignore

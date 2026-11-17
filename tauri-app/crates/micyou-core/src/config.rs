@@ -167,6 +167,10 @@ pub struct ServerPrefs {
     /// the phone nor applies mute state received from it. Defaults to true,
     /// including for server.json files written before this field existed.
     pub mute_sync: bool,
+    /// Reject plaintext Wi-Fi clients when encrypted streaming is required.
+    pub require_encryption: bool,
+    /// Rebuild inaccessible TCP/UDP listeners after sleep or adapter changes.
+    pub listener_watchdog: bool,
 }
 
 impl Default for ServerPrefs {
@@ -180,6 +184,8 @@ impl Default for ServerPrefs {
             auto_bind: true,
             output_device: String::new(),
             mute_sync: true,
+            require_encryption: false,
+            listener_watchdog: true,
         }
     }
 }
@@ -236,20 +242,35 @@ mod web_origin_tests {
             r#"{"webAllowedOrigins":["https://computer.example.ts.net","http://localhost:9000","https://[::1]:9443"]}"#,
         ).unwrap();
         assert!(validate_web_allowed_origins(&prefs.web_allowed_origins).is_ok());
-        let restored: ServerPrefs = serde_json::from_str(&serde_json::to_string(&prefs).unwrap()).unwrap();
+        let restored: ServerPrefs =
+            serde_json::from_str(&serde_json::to_string(&prefs).unwrap()).unwrap();
         assert_eq!(prefs.web_allowed_origins, restored.web_allowed_origins);
     }
 
     #[test]
     fn allowed_origins_reject_urls_patterns_and_noncanonical_values() {
         for origin in [
-            "*", "https://*.example.com", "https://example.com/", "https://example.com/audio",
-            "https://example.com?x=1", "https://example.com#fragment", "https://user:pass@example.com",
-            "https://@example.com", "file://example.com", "wss://example.com", "null",
-            "https://EXAMPLE.com", "https://example.com:443", " https://example.com",
-            "https://example.com\\evil", "https://example.com\n",
+            "*",
+            "https://*.example.com",
+            "https://example.com/",
+            "https://example.com/audio",
+            "https://example.com?x=1",
+            "https://example.com#fragment",
+            "https://user:pass@example.com",
+            "https://@example.com",
+            "file://example.com",
+            "wss://example.com",
+            "null",
+            "https://EXAMPLE.com",
+            "https://example.com:443",
+            " https://example.com",
+            "https://example.com\\evil",
+            "https://example.com\n",
         ] {
-            assert!(validate_web_allowed_origins(&[origin.to_string()]).is_err(), "accepted {origin:?}");
+            assert!(
+                validate_web_allowed_origins(&[origin.to_string()]).is_err(),
+                "accepted {origin:?}"
+            );
         }
     }
 }

@@ -14,7 +14,7 @@ export function openUrl(url: string): Promise<void> {
 
 /** Shows a desktop notification, asking for permission the first time. */
 export async function notify(body: string, title = 'MicYou'): Promise<void> {
-  if (!(await isPermissionGranted())) await requestPermission();
+  if (!(await isPermissionGranted()) && (await requestPermission()) !== 'granted') return;
   sendNotification({ title, body });
 }
 

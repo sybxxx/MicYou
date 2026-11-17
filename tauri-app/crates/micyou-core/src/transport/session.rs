@@ -124,11 +124,19 @@ pub fn can_bind_legacy_packet(packet: &AudioPacketMessageOrdered) -> bool {
         && packet.fec_sequence_number <= 0
 }
 
+#[derive(Debug, Clone)]
+pub struct AudioSessionInfo {
+    pub device: crate::transport::tcp::DeviceInfo,
+    pub encrypted: bool,
+    pub mode: crate::server::service::ConnectionMode,
+}
+
 #[derive(Debug)]
 pub enum AudioStreamEvent {
     SessionStarting {
         expected: ExpectedAudioSession,
         epoch: u64,
+        info: Option<AudioSessionInfo>,
     },
     Packet {
         packet: AudioPacketMessageOrdered,

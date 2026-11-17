@@ -48,11 +48,13 @@ async fn run_locked(
             .map_err(|e| format!("enable_usb_mode failed: {e}"))?;
     }
 
-    let state = Arc::new(ServerState::new(
+    let mut state = ServerState::new(
         Arc::new(TuiEventSink::new(tx)),
         Arc::new(HeadlessHost::new()),
         None,
-    ));
+    );
+    state.pairing_broker = Arc::new(micyou_core::pairing::PairingBroker::new(true));
+    let state = Arc::new(state);
     state.set_spectrum_streaming(true);
 
     let port = request.port;

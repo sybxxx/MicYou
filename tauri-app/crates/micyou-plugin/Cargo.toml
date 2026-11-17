@@ -13,7 +13,7 @@ log = "0.4.32"
 semver = "1"
 libloading = "0.9"
 wasmi = "2"
-micyou-protocol = { version = "2.0.0", path = "../micyou-protocol" }
+micyou-protocol.workspace = true
 
 [dev-dependencies]
 # Built before tests run; its cdylib artifact is loaded via libloading

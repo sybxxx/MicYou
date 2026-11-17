@@ -26,8 +26,8 @@ use crate::transport::session::AudioStreamEvent;
 use crate::transport::udp::{ActiveAudioSession, SharedActiveAudioSession};
 use micyou_audio::dsp::{AudioDspSettings, DspProcessor};
 use micyou_audio::AecFailure;
-use std::path::PathBuf;
 use micyou_protocol::micyou::AudioPacketMessage;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
@@ -179,16 +179,29 @@ impl StreamDecoder {
         if audio.codec == micyou_protocol::CODEC_OPUS {
             self.decode_opus(&audio.buffer, sample_rate, channels, out);
         } else if !decode_pcm(audio.audio_format, &audio.buffer, out) {
-            self.report_failure(format_args!("Unsupported audio format: {}", audio.audio_format));
+            self.report_failure(format_args!(
+                "Unsupported audio format: {}",
+                audio.audio_format
+            ));
         }
         if !out.is_empty() && sample_rate != OUTPUT_RATE {
             self.resample(sample_rate, channels, out);
         }
     }
 
-    fn decode_opus(&mut self, buffer: &[u8], sample_rate: u32, channels: usize, out: &mut Vec<f32>) {
+    fn decode_opus(
+        &mut self,
+        buffer: &[u8],
+        sample_rate: u32,
+        channels: usize,
+        out: &mut Vec<f32>,
+    ) {
         let key = (sample_rate, channels);
-        if self.opus.as_ref().is_none_or(|(current, _)| *current != key) {
+        if self
+            .opus
+            .as_ref()
+            .is_none_or(|(current, _)| *current != key)
+        {
             self.opus = opus::Channels::from_channel_count(channels)
                 .and_then(|ch| opus::Decoder::new(sample_rate, ch).ok())
                 .map(|decoder| (key, decoder));
@@ -211,7 +224,11 @@ impl StreamDecoder {
 
     fn resample(&mut self, sample_rate: u32, channels: usize, samples: &mut Vec<f32>) {
         let key = (sample_rate, channels);
-        if self.resampler.as_ref().is_none_or(|(current, _)| *current != key) {
+        if self
+            .resampler
+            .as_ref()
+            .is_none_or(|(current, _)| *current != key)
+        {
             let resampler = micyou_audio::RubatoResampler::new(sample_rate, OUTPUT_RATE, channels)
                 .inspect_err(|e| log::error!("[Audio] Failed to create resampler: {e}"))
                 .ok();
@@ -363,8 +380,15 @@ fn run(pipeline: Pipeline) {
     };
 
     let mut session_active = false;
+    let mut current_epoch = 0u64;
+    let mut session_info: Option<crate::transport::session::AudioSessionInfo> = None;
+    let mut connection_published = false;
     loop {
-        let wait = if session_active { ACTIVE_POLL } else { IDLE_POLL };
+        let wait = if session_active {
+            ACTIVE_POLL
+        } else {
+            IDLE_POLL
+        };
         let event = match recv_within(&runtime, &mut audio_rx, wait) {
             Ok(Some(event)) => event,
             Ok(None) => break,
@@ -381,7 +405,14 @@ fn run(pipeline: Pipeline) {
             audio_output.set_monitoring(monitoring_now);
         }
         match event {
-            AudioStreamEvent::SessionStarting { expected, epoch } => {
+            AudioStreamEvent::SessionStarting {
+                expected,
+                epoch,
+                info,
+            } => {
+                current_epoch = epoch;
+                session_info = info;
+                connection_published = false;
                 audio_received_for_session = false;
                 if let Some(lb) = &loopback {
                     lb.reset_session();
@@ -442,13 +473,56 @@ fn run(pipeline: Pipeline) {
                 stats.set_levels(input_rms, processed_rms);
             }
 
-            audio_output.push(pcm_f32.clone(), channels);
+            if let Some(info) = session_info.as_ref() {
+                let active = active_audio_session
+                    .read()
+                    .unwrap_or_else(|p| p.into_inner());
+                let live_epoch = match *active {
+                    ActiveAudioSession::Bound { epoch, .. }
+                    | ActiveAudioSession::UnboundLegacy { epoch, .. } => epoch,
+                    ActiveAudioSession::Inactive => 0,
+                };
+                if live_epoch != current_epoch {
+                    continue;
+                }
+                if let Some(accepted_at) = audio_output.accepted_at(current_epoch) {
+                    stats.mark_audio_output(accepted_at);
+                    if !connection_published {
+                        events.session_security_changed(info.encrypted);
+                        events.device_connected(info.device.clone());
+                        connection_published = true;
+                        // Plugin callbacks may inspect session state: release
+                        // its read guard before handing control to plugins.
+                        drop(active);
+                        plugins.broadcast_event(&micyou_plugin::PluginEvent::DeviceConnected {
+                            mode: info.mode.as_str().to_string(),
+                            label: info.device.name.clone(),
+                        });
+                    } else {
+                        drop(active);
+                    }
+                } else {
+                    drop(active);
+                }
+                audio_output.push_tracked(
+                    pcm_f32.clone(),
+                    channels,
+                    current_epoch,
+                    active_audio_session.clone(),
+                );
+            } else {
+                audio_output.push(pcm_f32.clone(), channels);
+            }
 
             frame_counter = frame_counter.wrapping_add(1);
             if !frame_counter.is_multiple_of(6) {
                 continue;
             }
-            let level = if muted { 0 } else { (processed_rms * 500.0).min(100.0) as u32 };
+            let level = if muted {
+                0
+            } else {
+                (processed_rms * 500.0).min(100.0) as u32
+            };
             events.audio_level(level);
             if spectrum_streaming_enabled.load(Ordering::Acquire) {
                 let (mut raw, mut processed) = dsp_processor.get_spectrums();

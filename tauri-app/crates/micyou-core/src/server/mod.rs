@@ -56,6 +56,8 @@ pub struct ServerState {
     pub active_connection: SharedActiveConnection,
     pub takeover_lock: SharedTakeoverLock,
     pub active_audio_session: SharedActiveAudioSession,
+    pub session_crypto: crate::pairing::SharedSessionCrypto,
+    pub pairing_broker: Arc<crate::pairing::PairingBroker>,
     pub audio_output: Arc<AudioOutputHandle>,
     pub plugins: Arc<PluginHost>,
     #[cfg(feature = "web-server")]
@@ -105,6 +107,8 @@ impl ServerState {
             active_connection,
             takeover_lock: Arc::new(Mutex::new(())),
             active_audio_session,
+            session_crypto: Arc::new(Mutex::new(None)),
+            pairing_broker: Arc::new(crate::pairing::PairingBroker::default()),
             audio_output,
             plugins,
             #[cfg(feature = "web-server")]

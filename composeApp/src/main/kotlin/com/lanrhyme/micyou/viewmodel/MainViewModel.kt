@@ -96,6 +96,8 @@ data class AppUiState(
     val showUdpWarningDialog: Boolean = false,
 
     val androidAudioSourceName: String = "Mic",
+    val isEncrypted: Boolean = false,
+    val pairingPrompt: AudioEngine.PairingPrompt? = null,
 
     // Settings State
     val themeMode: ThemeMode = ThemeMode.System,
@@ -228,6 +230,8 @@ class MainViewModel : ViewModel() {
                         errorDetails = audioState.errorDetails,
                         showUdpWarningDialog = audioState.showUdpWarningDialog,
                         androidAudioSourceName = audioState.androidAudioSourceName,
+                        isEncrypted = audioState.isEncrypted,
+                        pairingPrompt = audioState.pairingPrompt,
                         themeMode = settingsState.themeMode,
                         seedColor = settingsState.seedColor,
                         useDynamicColor = settingsState.useDynamicColor,
@@ -268,6 +272,7 @@ class MainViewModel : ViewModel() {
     // Audio Stream methods
     fun toggleStream() = audioStreamViewModel.toggleStream()
     fun toggleMute() = audioStreamViewModel.toggleMute()
+    fun answerPairingPrompt(accepted: Boolean) = audioStreamViewModel.answerPairingPrompt(accepted)
     fun startStream() = audioStreamViewModel.startStream()
     fun stopStream() = audioStreamViewModel.stopStream()
     fun setMode(mode: ConnectionMode) = audioStreamViewModel.setMode(mode)

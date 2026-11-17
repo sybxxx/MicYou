@@ -35,6 +35,8 @@ pub struct NetworkStats {
     pub loss_rate_bits: AtomicU64,
     pub last_udp_packet_time_ms: AtomicU64,
     pub last_audio_packet_time_ms: AtomicU64,
+    pub last_audio_output_time_ms: AtomicU64,
+    pub audio_health_grace_start_ms: AtomicU64,
     pub tcp_connected_time_ms: AtomicU64,
     pub bitrate: AtomicU32,
     pub sample_rate: AtomicU32,
@@ -57,6 +59,8 @@ impl Default for NetworkStats {
             loss_rate_bits: AtomicU64::new(0f64.to_bits()),
             last_udp_packet_time_ms: AtomicU64::new(0),
             last_audio_packet_time_ms: AtomicU64::new(0),
+            last_audio_output_time_ms: AtomicU64::new(0),
+            audio_health_grace_start_ms: AtomicU64::new(0),
             tcp_connected_time_ms: AtomicU64::new(0),
             bitrate: AtomicU32::new(0),
             sample_rate: AtomicU32::new(0),
@@ -112,12 +116,27 @@ impl NetworkStats {
         self.last_audio_packet_time_ms.load(Ordering::Relaxed)
     }
 
+    pub fn mark_audio_output(&self, time_ms: u64) {
+        self.last_audio_output_time_ms
+            .store(time_ms, Ordering::Relaxed);
+    }
+    pub fn get_last_audio_output_time(&self) -> u64 {
+        self.last_audio_output_time_ms.load(Ordering::Relaxed)
+    }
+    pub fn audio_health_baseline(&self) -> u64 {
+        self.get_tcp_connected_time()
+            .max(self.get_last_audio_output_time())
+            .max(self.audio_health_grace_start_ms.load(Ordering::Relaxed))
+    }
     pub fn mark_tcp_connected(&self, time_ms: u64) {
+        self.mark_tcp_disconnected();
         self.tcp_connected_time_ms.store(time_ms, Ordering::Relaxed);
         self.last_udp_packet_time_ms.store(0, Ordering::Relaxed);
         self.last_audio_packet_time_ms.store(0, Ordering::Relaxed);
     }
     pub fn mark_tcp_disconnected(&self) {
+        self.audio_health_grace_start_ms.store(0, Ordering::Relaxed);
+        self.last_audio_output_time_ms.store(0, Ordering::Relaxed);
         self.tcp_connected_time_ms.store(0, Ordering::Relaxed);
         self.last_udp_packet_time_ms.store(0, Ordering::Relaxed);
         self.last_audio_packet_time_ms.store(0, Ordering::Relaxed);
@@ -130,7 +149,12 @@ impl NetworkStats {
     }
 
     pub fn set_muted(&self, muted: bool) {
-        self.is_muted.store(muted, Ordering::Relaxed);
+        if self.is_muted.swap(muted, Ordering::Relaxed) && !muted {
+            // Unmuting starts a short recovery grace period. This is not an
+            // output receipt and must never make a handshake look connected.
+            self.audio_health_grace_start_ms
+                .store(unix_millis(), Ordering::Relaxed);
+        }
     }
     pub fn is_muted(&self) -> bool {
         self.is_muted.load(Ordering::Relaxed)
@@ -150,8 +174,10 @@ impl NetworkStats {
     }
 
     pub fn set_levels(&self, input: f32, processed: f32) {
-        self.input_level_bits.store(input.to_bits(), Ordering::Relaxed);
-        self.processed_level_bits.store(processed.to_bits(), Ordering::Relaxed);
+        self.input_level_bits
+            .store(input.to_bits(), Ordering::Relaxed);
+        self.processed_level_bits
+            .store(processed.to_bits(), Ordering::Relaxed);
     }
 
     pub fn to_metrics(&self, buffer_duration: i64) -> AudioMetrics {
@@ -215,7 +241,10 @@ impl StreamMeter {
             };
         }
         if let Some(audio) = &packet.audio_packet {
-            stats.set_audio_info(audio.sample_rate.max(0) as u32, audio.channel_count.max(0) as u32);
+            stats.set_audio_info(
+                audio.sample_rate.max(0) as u32,
+                audio.channel_count.max(0) as u32,
+            );
         }
         self.window_bytes += payload_len as u64;
         let elapsed = now.saturating_sub(self.window_start_ms);

@@ -10,6 +10,7 @@ lerna-debug.log*
 node_modules
 dist
 dist-ssr
+output/playwright/
 *.local
 src/generated/third-party-licenses.html
 src-tauri/binaries/*

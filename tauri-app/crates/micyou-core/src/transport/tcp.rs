@@ -14,10 +14,15 @@
  */
 
 use crate::events::SharedEvents;
+use crate::pairing::{ActiveSessionCrypto, PairingBroker, SharedSessionCrypto};
+use crate::secure_channel::{Direction, SessionCrypto, AEAD_TAG_LEN};
+#[path = "tcp_security.rs"]
+mod security;
 use crate::server::service::ConnectionMode;
 use micyou_protocol::micyou::MessageWrapper;
 use micyou_protocol::{HANDSHAKE_CLIENT_STR, HANDSHAKE_SERVER_STR, PACKET_MAGIC};
 use prost::Message;
+use security::{decode_frame, establish_secure_session, header_from_payload, read_raw_frame};
 use serde::Serialize;
 use std::error::Error;
 use std::io::{Error as IoError, ErrorKind};
@@ -43,6 +48,8 @@ const FRAME_HEADER_LEN: usize = 8;
 // Audio protobuf frames are normally only a few KiB. One MiB leaves ample codec and
 // control-message headroom while bounding allocations from an untrusted peer.
 const MAX_CONTROL_PAYLOAD_LEN: usize = 1024 * 1024;
+const PAIRING_TIMEOUT: Duration = Duration::from_secs(180);
+const AUDIO_HEALTH_TIMEOUT: Duration = Duration::from_secs(3);
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_CONCURRENT_CLIENTS: usize = 64;
 const FRAME_READ_TIMEOUT: Duration = Duration::from_secs(10);
@@ -143,6 +150,10 @@ pub struct TcpServerConfig {
     pub takeover_lock: SharedTakeoverLock,
     pub active_audio_session: SharedActiveAudioSession,
     pub plugins: Arc<crate::plugins::PluginHost>,
+    pub security: crate::secure_channel::SharedSecurity,
+    pub session_crypto: SharedSessionCrypto,
+    pub pairing_broker: Arc<PairingBroker>,
+    pub rebind_requests: tokio::sync::watch::Receiver<u64>,
 }
 
 /// Run the TCP control server until cancelled; startup success or failure
@@ -172,17 +183,22 @@ async fn serve(
         takeover_lock,
         active_audio_session,
         plugins,
+        security,
+        session_crypto,
+        pairing_broker,
+        mut rebind_requests,
     } = config;
     // IPv6-aware bind: for IPv4 literals and hostnames this is exactly the
     // legacy `TcpListener::bind(format!("{}:{}", bind_address, port))` path.
     let bind_target = crate::transport::net_bind::normalize_socket_addr(&bind_address, port);
-    let listener = match crate::transport::net_bind::bind_tcp_listener(&bind_address, port).await {
-        Ok(listener) => listener,
-        Err(error) => {
-            let _ = ready.send(Err(error.to_string()));
-            return Err(Box::new(error));
-        }
-    };
+    let mut listener =
+        match crate::transport::net_bind::bind_tcp_listener(&bind_address, port).await {
+            Ok(listener) => listener,
+            Err(error) => {
+                let _ = ready.send(Err(error.to_string()));
+                return Err(Box::new(error));
+            }
+        };
 
     // Additive IPv6 companion listener for the legacy IPv4 auto-bind
     // ("0.0.0.0"): also listen on [::] (v6-only) so IPv6 clients can connect
@@ -190,7 +206,7 @@ async fn serve(
     // touched; a companion failure (no IPv6 stack, port unavailable) is
     // non-fatal and only logged. Bound BEFORE signalling ready so clients
     // can never observe a half-started server.
-    let v6_listener = if crate::transport::net_bind::wants_v6_companion(&bind_address) {
+    let mut v6_listener = if crate::transport::net_bind::wants_v6_companion(&bind_address) {
         match crate::transport::net_bind::bind_tcp_listener_v6only(port) {
             Ok(listener) => {
                 log::info!(
@@ -249,6 +265,9 @@ async fn serve(
                     let active_audio_session = active_audio_session.clone();
                     let plugins = plugins.clone();
                     let client_cancel = cancel_token.clone();
+                    let security = security.clone();
+                    let session_crypto = session_crypto.clone();
+                    let pairing_broker = pairing_broker.clone();
                     clients.spawn(async move {
                         let _permit = permit;
                         if let Err(e) = handle_client(
@@ -262,6 +281,9 @@ async fn serve(
                             takeover_lock,
                             active_audio_session,
                             plugins,
+                            security,
+                            session_crypto,
+                            pairing_broker,
                             client_cancel,
                         )
                         .await
@@ -287,6 +309,24 @@ async fn serve(
                     log::warn!("TCP client task failed: {}", e);
                 }
             }
+            result = rebind_requests.changed() => {
+                if result.is_err() { break; }
+                drop(listener);
+                drop(v6_listener);
+                // A candidate already accepted by the old listener may still
+                // be handshaking. Keep its publication behind the same lock
+                // until audio, crypto and diagnostics have all been retired.
+                let _takeover_guard = takeover_lock.lock().await;
+                cleanup_session_state(&active_connection, &active_audio_session, &session_crypto).await;
+                stats.mark_tcp_disconnected();
+                events.device_disconnected();
+                events.session_security_changed(false);
+                let Some(rebuilt) = rebuild_listener(&bind_address, port, &cancel_token).await else { break; };
+                listener = rebuilt;
+                v6_listener = if crate::transport::net_bind::wants_v6_companion(&bind_address) {
+                    crate::transport::net_bind::bind_tcp_listener_v6only(port).ok()
+                } else { None };
+            }
             accept_result = listener.accept() => {
                 accept_client!(accept_result);
             }
@@ -298,7 +338,7 @@ async fn serve(
 
     // Take ownership of the published raw socket while handle_client still owns the
     // corresponding TcpStream, then shut it down so client tasks can exit cooperatively.
-    cleanup_session_state(&active_connection, &active_audio_session).await;
+    cleanup_session_state(&active_connection, &active_audio_session, &session_crypto).await;
     if timeout(CLIENT_SHUTDOWN_GRACE_PERIOD, async {
         while clients.join_next().await.is_some() {}
     })
@@ -314,8 +354,15 @@ async fn serve(
 pub async fn cleanup_session_state(
     active_connection: &SharedActiveConnection,
     active_audio_session: &SharedActiveAudioSession,
+    session_crypto: &SharedSessionCrypto,
 ) {
-    cleanup_session_state_with(active_connection, active_audio_session, force_close_socket).await;
+    cleanup_session_state_with(
+        active_connection,
+        active_audio_session,
+        Some(session_crypto),
+        force_close_socket,
+    )
+    .await;
 }
 
 /// Accepts from the optional IPv6 companion listener. When no companion is
@@ -333,6 +380,7 @@ async fn accept_v6_companion(
 async fn cleanup_session_state_with<F>(
     active_connection: &SharedActiveConnection,
     active_audio_session: &SharedActiveAudioSession,
+    session_crypto: Option<&SharedSessionCrypto>,
     mut shutdown_socket: F,
 ) where
     F: FnMut(RawSocketHandle),
@@ -341,16 +389,23 @@ async fn cleanup_session_state_with<F>(
     // callers must not be able to act on a descriptor that its TcpStream may have closed.
     let connection = {
         let mut active = active_connection.lock().await;
-        active.take()
+        let mut crypto = match session_crypto {
+            Some(slot) => Some(slot.lock().await),
+            None => None,
+        };
+        let old = active.take();
+        if let Some(slot) = crypto.as_mut() {
+            **slot = None;
+        }
+        *active_audio_session
+            .write()
+            .unwrap_or_else(|p| p.into_inner()) = ActiveAudioSession::Inactive;
+        old
     };
     if let Some(connection) = connection {
         connection.takeover_token.cancel();
         shutdown_socket(connection.raw_socket);
         drop(connection.sender);
-    }
-    match active_audio_session.write() {
-        Ok(mut active) => *active = ActiveAudioSession::default(),
-        Err(poisoned) => *poisoned.into_inner() = ActiveAudioSession::default(),
     }
 }
 
@@ -447,19 +502,6 @@ async fn is_active(
     run_if_active(active, takeover_token, connection_id, || {}).await
 }
 
-async fn clear_if_active(active: &SharedActiveConnection, connection_id: u64) -> bool {
-    let mut lock = active.lock().await;
-    if lock
-        .as_ref()
-        .is_some_and(|connection| connection.connection_id == connection_id)
-    {
-        *lock = None;
-        true
-    } else {
-        false
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 async fn handle_client(
     mut socket: TcpStream,
@@ -472,6 +514,9 @@ async fn handle_client(
     takeover_lock: SharedTakeoverLock,
     active_audio_session: SharedActiveAudioSession,
     plugins: Arc<crate::plugins::PluginHost>,
+    security: crate::secure_channel::SharedSecurity,
+    session_crypto_slot: SharedSessionCrypto,
+    pairing_broker: Arc<PairingBroker>,
     cancel_token: CancellationToken,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     let mut handshake_buf = vec![0u8; HANDSHAKE_CLIENT_STR.len()];
@@ -497,19 +542,33 @@ async fn handle_client(
         }
     }
 
-    // The first framed message completes the protocol handshake. Modern clients send Connect with
-    // their audio session ID; legacy clients' first control/audio frame decodes with no Connect.
-    let first_message = tokio::select! {
-        _ = cancel_token.cancelled() => return Ok(()),
-        result = timeout(FRAME_READ_TIMEOUT, async {
-            let mut header = [0u8; FRAME_HEADER_LEN];
-            socket.read_exact(&mut header).await?;
-            let payload_len = parse_frame_header(&header)?;
-            let mut payload = vec![0u8; payload_len];
-            socket.read_exact(&mut payload).await?;
-            MessageWrapper::decode(payload.as_slice())
-                .map_err(|e| IoError::new(ErrorKind::InvalidData, e))
-        }) => result.map_err(|_| IoError::new(ErrorKind::TimedOut, "initial control frame timed out"))??,
+    let connection_id = NEXT_CONNECTION_ID.fetch_add(1, Ordering::Relaxed);
+    let (_, first_payload) = read_raw_frame(&mut socket, &cancel_token).await?;
+    let first = MessageWrapper::decode(first_payload.as_slice())?;
+    let session_crypto = if let Some(hello) = first.secure_client_hello.as_ref() {
+        Some(
+            establish_secure_session(
+                &mut socket,
+                &security,
+                pairing_broker.as_ref(),
+                &events,
+                &hello.encode_to_vec(),
+                connection_id,
+                &cancel_token,
+            )
+            .await?,
+        )
+    } else {
+        if security.require_encryption {
+            return Err("plaintext connections are disabled (requireEncryption)".into());
+        }
+        None
+    };
+    let first_message = if session_crypto.is_some() {
+        let (header, payload) = read_raw_frame(&mut socket, &cancel_token).await?;
+        decode_frame(&session_crypto, &header, &payload)?
+    } else {
+        first
     };
     let expected_session = match first_message.connect.as_ref() {
         Some(connect) => ExpectedAudioSession::Bound(connect.session_id),
@@ -531,7 +590,6 @@ async fn handle_client(
     #[cfg(unix)]
     let raw: RawSocketHandle = std::os::unix::io::AsRawFd::as_raw_fd(&socket);
 
-    let connection_id = NEXT_CONNECTION_ID.fetch_add(1, Ordering::Relaxed);
     let (tx, mut rx) = tokio::sync::mpsc::channel::<MessageWrapper>(100);
     let takeover_token = CancellationToken::new();
 
@@ -548,6 +606,9 @@ async fn handle_client(
     };
     let old = {
         let mut active = active_connection.lock().await;
+        if cancel_token.is_cancelled() {
+            return Ok(());
+        }
         let old = active.replace(ActiveConnection {
             sender: tx.clone(),
             raw_socket: raw,
@@ -563,12 +624,8 @@ async fn handle_client(
             let mut active_audio = active_audio_session
                 .write()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let previous_epoch = match *active_audio {
-                ActiveAudioSession::Inactive => 0,
-                ActiveAudioSession::UnboundLegacy { epoch, .. }
-                | ActiveAudioSession::Bound { epoch, .. } => epoch,
-            };
-            let epoch = previous_epoch.wrapping_add(1).max(1);
+            // Epochs must remain unique after an inactive gap, too.
+            let epoch = connection_id;
             *active_audio = match expected_session {
                 ExpectedAudioSession::Inactive => ActiveAudioSession::Inactive,
                 ExpectedAudioSession::UnboundLegacy => ActiveAudioSession::UnboundLegacy {
@@ -583,9 +640,26 @@ async fn handle_client(
             };
             epoch
         };
+        stats.mark_tcp_connected(crate::stats::unix_millis());
+        *session_crypto_slot.lock().await =
+            session_crypto.as_ref().map(|crypto| ActiveSessionCrypto {
+                peer_ip: addr.ip(),
+                connection_id,
+                udp: crypto.udp_handle(),
+            });
         session_start_permit.send(AudioStreamEvent::SessionStarting {
             expected: expected_session,
             epoch,
+            info: Some(crate::transport::session::AudioSessionInfo {
+                device: DeviceInfo {
+                    name: platform.device_label().to_string(),
+                    ip: addr.ip().to_string(),
+                    latency: 0,
+                    platform,
+                },
+                encrypted: session_crypto.is_some(),
+                mode,
+            }),
         });
         // Point the plugin sync adapter at this client's control channel so
         // plugin messages can flow to the phone (cleared when it exits).
@@ -596,22 +670,7 @@ async fn handle_client(
     drop(_takeover_guard);
 
     log::info!("Handshake successful with {} ({:?})", addr, platform);
-    let device_info = DeviceInfo {
-        name: platform.device_label().to_string(),
-        ip: addr.ip().to_string(),
-        latency: 12,
-        platform,
-    };
-    let current_time = crate::stats::unix_millis();
-    if is_active(&active_connection, &takeover_token, connection_id).await {
-        stats.mark_tcp_connected(current_time);
-        events.device_connected(device_info.clone());
-        plugins.broadcast_event(&micyou_plugin::PluginEvent::DeviceConnected {
-            mode: mode.as_str().to_string(),
-            label: device_info.name,
-        });
-    }
-
+    // The audio pipeline emits connected after actual output acceptance.
     let mut meter = crate::stats::StreamMeter::default();
     handle_message(
         first_message,
@@ -630,6 +689,7 @@ async fn handle_client(
     .await;
 
     let (mut read_half, mut write_half) = socket.into_split();
+    let writer_crypto = session_crypto.clone();
     let writer_task = tokio::spawn(async move {
         while let Some(msg) = rx.recv().await {
             let payload = msg.encode_to_vec();
@@ -637,16 +697,30 @@ async fn handle_client(
                 log::warn!("Outgoing control payload exceeds protocol limit");
                 break;
             }
-            let Ok(payload_len) = i32::try_from(payload.len()) else {
+            let sealed_len = payload.len()
+                + if writer_crypto.is_some() {
+                    AEAD_TAG_LEN
+                } else {
+                    0
+                };
+            if sealed_len > MAX_CONTROL_PAYLOAD_LEN {
                 break;
+            }
+            let header = header_from_payload(sealed_len);
+            let payload = match &writer_crypto {
+                Some(crypto) => {
+                    match crypto.seal_tcp_payload(Direction::ServerToClient, &header, &payload) {
+                        Ok(payload) => payload,
+                        Err(error) => {
+                            log::warn!("Encrypted write failed: {error}");
+                            break;
+                        }
+                    }
+                }
+                None => payload,
             };
-            let frame_len = match FRAME_HEADER_LEN.checked_add(payload.len()) {
-                Some(len) => len,
-                None => break,
-            };
-            let mut frame = Vec::with_capacity(frame_len);
-            frame.extend_from_slice(&PACKET_MAGIC.to_be_bytes());
-            frame.extend_from_slice(&payload_len.to_be_bytes());
+            let mut frame = Vec::with_capacity(FRAME_HEADER_LEN + payload.len());
+            frame.extend_from_slice(&header);
             frame.extend_from_slice(&payload);
             match timeout(FRAME_WRITE_TIMEOUT, write_half.write_all(&frame)).await {
                 Ok(Ok(())) => {}
@@ -663,6 +737,7 @@ async fn handle_client(
     });
 
     let tx_ping = tx.clone();
+    let stats_ping = stats.clone();
     let ping_task = tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_millis(500));
         loop {
@@ -673,10 +748,16 @@ async fn handle_client(
                 mute: None,
                 ping: Some(micyou_protocol::micyou::PingMessage {
                     timestamp: crate::stats::unix_millis() as i64,
+                    audio_health_supported: true,
+                    audio_healthy: audio_health_is_healthy(
+                        &stats_ping,
+                        crate::stats::unix_millis(),
+                    ),
                 }),
                 pong: None,
                 plugin_message: None,
                 stats: None,
+                ..Default::default()
             };
             if tx_ping.send(ping_msg).await.is_err() {
                 break;
@@ -687,11 +768,29 @@ async fn handle_client(
     let stats_emit = stats.clone();
     let events_emit = events.clone();
     let tx_stats = tx.clone();
+    let monitor_active = active_connection.clone();
+    let monitor_token = takeover_token.clone();
     let monitor_task = tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_millis(1000));
         let mut warning_fired = false;
         loop {
             interval.tick().await;
+            if !is_active(&monitor_active, &monitor_token, connection_id).await {
+                break;
+            }
+            let now = crate::stats::unix_millis();
+            let started = stats_emit.get_tcp_connected_time();
+            let baseline = stats_emit.audio_health_baseline();
+            if !stats_emit.is_muted() && started != 0 && now.saturating_sub(baseline) > 10_000 {
+                // Keep teardown in the owning reader. Closing this owned socket
+                // wakes it, then it atomically retires only its own connection.
+                run_if_active(&monitor_active, &monitor_token, connection_id, || {
+                    monitor_token.cancel();
+                    force_close_socket(raw);
+                })
+                .await;
+                break;
+            }
             let buffer_duration = if mode == ConnectionMode::Usb { 5 } else { 30 };
             let metrics = stats_emit.to_metrics(buffer_duration);
             // Best effort: a full control queue only skips this second's report.
@@ -737,7 +836,7 @@ async fn handle_client(
             .await
             .map_err(|_| IoError::new(ErrorKind::TimedOut, "control frame read timed out"))??;
 
-            let message = MessageWrapper::decode(frame_result.as_slice())?;
+            let message = decode_frame(&session_crypto, &header, &frame_result)?;
             if takeover_token.is_cancelled() {
                 break;
             }
@@ -763,17 +862,35 @@ async fn handle_client(
 
     let reader_result = tokio::select! {
         _ = cancel_token.cancelled() => Ok(()),
+        _ = takeover_token.cancelled() => Ok(()),
         result = reader => result,
     };
     task_guard.abort_and_wait().await;
 
-    if clear_if_active(&active_connection, connection_id).await {
-        *active_audio_session
-            .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = ActiveAudioSession::default();
-        stats.mark_tcp_disconnected();
-        events.device_disconnected();
-        plugins.broadcast_event(&micyou_plugin::PluginEvent::DeviceDisconnected);
+    {
+        let mut active = active_connection.lock().await;
+        if active
+            .as_ref()
+            .is_some_and(|c| c.connection_id == connection_id)
+        {
+            active.take();
+            *active_audio_session
+                .write()
+                .unwrap_or_else(|p| p.into_inner()) = ActiveAudioSession::Inactive;
+            let mut crypto = session_crypto_slot.lock().await;
+            if crypto
+                .as_ref()
+                .is_some_and(|c| c.connection_id == connection_id)
+            {
+                *crypto = None;
+            }
+            stats.mark_tcp_disconnected();
+            events.device_disconnected();
+            events.session_security_changed(false);
+            drop(crypto);
+            drop(active);
+            plugins.broadcast_event(&micyou_plugin::PluginEvent::DeviceDisconnected);
+        }
     }
     // Release the plugin sync slot if it still points at this session.
     plugins.sync.clear_if(&tx);
@@ -818,8 +935,21 @@ async fn handle_message(
         else {
             return;
         };
-        stats.mark_audio_received(crate::stats::unix_millis());
-        meter.observe(stats, epoch, &audio, audio_payload_len(&audio));
+        {
+            let current = active_audio_session
+                .read()
+                .unwrap_or_else(|p| p.into_inner());
+            let current_epoch = match *current {
+                ActiveAudioSession::Bound { epoch, .. }
+                | ActiveAudioSession::UnboundLegacy { epoch, .. } => epoch,
+                ActiveAudioSession::Inactive => 0,
+            };
+            if current_epoch != epoch {
+                return;
+            }
+            stats.mark_audio_received(crate::stats::unix_millis());
+            meter.observe(stats, epoch, &audio, audio_payload_len(&audio));
+        }
         let permit = tokio::select! {
             biased;
             _ = takeover_token.cancelled() => return,
@@ -847,6 +977,7 @@ async fn handle_message(
             }),
             plugin_message: None,
             stats: None,
+            ..Default::default()
         };
         let permit = tokio::select! {
             biased;
@@ -896,6 +1027,41 @@ async fn handle_message(
     }
 }
 
+fn audio_health_is_healthy(stats: &crate::stats::NetworkStats, now: u64) -> bool {
+    if stats.is_muted() {
+        return true;
+    }
+    let started = stats.get_tcp_connected_time();
+    started == 0
+        || now.saturating_sub(stats.audio_health_baseline())
+            <= AUDIO_HEALTH_TIMEOUT.as_millis() as u64
+}
+
+async fn rebuild_listener(
+    bind: &str,
+    port: u16,
+    token: &CancellationToken,
+) -> Option<tokio::net::TcpListener> {
+    loop {
+        let attempt = tokio::select! {
+            _ = token.cancelled() => return None,
+            result = crate::transport::net_bind::bind_tcp_listener(bind, port) => result,
+        };
+        match attempt {
+            Ok(listener) => return Some(listener),
+            Err(error) => log::warn!("TCP listener rebuild failed: {error}"),
+        }
+        if crate::listener_watchdog::wait_or_cancel(
+            crate::listener_watchdog::REBIND_RETRY_INTERVAL,
+            token,
+        )
+        .await
+        {
+            return None;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -905,6 +1071,78 @@ mod tests {
         header[..4].copy_from_slice(&PACKET_MAGIC.to_be_bytes());
         header[4..].copy_from_slice(&payload_len.to_be_bytes());
         header
+    }
+
+    #[test]
+    fn health_requires_output_progress_but_honors_startup_and_mute() {
+        let stats = crate::stats::NetworkStats::default();
+        stats.mark_tcp_connected(1_000);
+        assert!(audio_health_is_healthy(&stats, 4_000));
+        stats.mark_audio_received(5_000);
+        assert!(!audio_health_is_healthy(&stats, 5_000));
+        stats.mark_audio_output(5_000);
+        assert!(audio_health_is_healthy(&stats, 5_001));
+        stats.set_muted(true);
+        assert!(audio_health_is_healthy(&stats, 100_000));
+        stats.set_muted(false);
+        stats.mark_tcp_connected(101_000);
+        assert_eq!(stats.get_last_audio_output_time(), 0);
+        assert!(audio_health_is_healthy(&stats, 101_001));
+    }
+
+    #[test]
+    fn unmute_grace_is_not_mistaken_for_audio_output() {
+        let stats = crate::stats::NetworkStats::default();
+        let now = crate::stats::unix_millis();
+        stats.mark_tcp_connected(now.saturating_sub(20_000));
+        assert!(!audio_health_is_healthy(&stats, now));
+        stats.set_muted(true);
+        stats.set_muted(false);
+        assert!(audio_health_is_healthy(&stats, crate::stats::unix_millis()));
+        assert_eq!(stats.get_last_audio_output_time(), 0);
+    }
+
+    #[tokio::test]
+    async fn old_cleanup_cannot_clear_a_new_session_published_during_socket_shutdown() {
+        let (sender, _rx) = tokio::sync::mpsc::channel(1);
+        let connection = Arc::new(Mutex::new(Some(ActiveConnection {
+            sender,
+            raw_socket: 41 as RawSocketHandle,
+            connection_id: 41,
+            takeover_token: CancellationToken::new(),
+            platform: ClientPlatform::Android,
+        })));
+        let audio = Arc::new(std::sync::RwLock::new(ActiveAudioSession::Bound {
+            peer_ip: "127.0.0.1".parse().unwrap(),
+            session_id: 41,
+            epoch: 41,
+        }));
+        let published_connection = connection.clone();
+        let published_audio = audio.clone();
+        // The shutdown hook models a new handshake exactly in the old race
+        // window. It never calls the native socket API or signals a process.
+        cleanup_session_state_with(&connection, &audio, None, move |_handle| {
+            let (sender, _rx) = tokio::sync::mpsc::channel(1);
+            let mut active = published_connection.try_lock().unwrap();
+            *active = Some(ActiveConnection {
+                sender,
+                raw_socket: 42 as RawSocketHandle,
+                connection_id: 42,
+                takeover_token: CancellationToken::new(),
+                platform: ClientPlatform::Android,
+            });
+            *published_audio.write().unwrap() = ActiveAudioSession::Bound {
+                peer_ip: "127.0.0.1".parse().unwrap(),
+                session_id: 42,
+                epoch: 42,
+            };
+        })
+        .await;
+        assert_eq!(connection.lock().await.as_ref().unwrap().connection_id, 42);
+        assert!(matches!(
+            *audio.read().unwrap(),
+            ActiveAudioSession::Bound { epoch: 42, .. }
+        ));
     }
 
     #[test]
@@ -1030,17 +1268,25 @@ mod tests {
         let shutdown_handles_first = shutdown_handles.clone();
         let active_connection_at_shutdown = active_connection.clone();
         let token_at_shutdown = token.clone();
-        cleanup_session_state_with(&active_connection, &active_audio_session, move |handle| {
-            assert!(active_connection_at_shutdown.try_lock().unwrap().is_none());
-            assert!(token_at_shutdown.is_cancelled());
-            shutdown_handles_first.lock().unwrap().push(handle);
-        })
+        cleanup_session_state_with(
+            &active_connection,
+            &active_audio_session,
+            None,
+            move |handle| {
+                assert!(active_connection_at_shutdown.try_lock().unwrap().is_none());
+                assert!(token_at_shutdown.is_cancelled());
+                shutdown_handles_first.lock().unwrap().push(handle);
+            },
+        )
         .await;
 
         let shutdown_handles_second = shutdown_handles.clone();
-        cleanup_session_state_with(&active_connection, &active_audio_session, move |handle| {
-            shutdown_handles_second.lock().unwrap().push(handle)
-        })
+        cleanup_session_state_with(
+            &active_connection,
+            &active_audio_session,
+            None,
+            move |handle| shutdown_handles_second.lock().unwrap().push(handle),
+        )
         .await;
 
         assert_eq!(*shutdown_handles.lock().unwrap(), vec![raw]);
@@ -1053,3 +1299,7 @@ mod tests {
         assert!(receiver.recv().await.is_none());
     }
 }
+
+#[cfg(test)]
+#[path = "tcp_migration_tests.rs"]
+mod migration_tests;

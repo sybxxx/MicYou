@@ -35,7 +35,9 @@ use std::sync::{Arc, RwLock};
 /// Names of the output devices cpal can open, sorted and deduplicated.
 pub fn audio_devices() -> Vec<String> {
     let mut names: Vec<String> = match cpal::default_host().output_devices() {
-        Ok(devices) => devices.filter_map(|dev| micyou_audio::device_name(&dev)).collect(),
+        Ok(devices) => devices
+            .filter_map(|dev| micyou_audio::device_name(&dev))
+            .collect(),
         Err(e) => {
             log::warn!("[Audio] listing output devices failed: {e}");
             Vec::new()
@@ -198,7 +200,8 @@ impl Controls {
             .map_err(|e| format!("Failed to persist settings: {e}"))?;
         *current = settings;
         drop(current);
-        self.plugins.broadcast_event(&PluginEvent::DspSettingsChanged);
+        self.plugins
+            .broadcast_event(&PluginEvent::DspSettingsChanged);
         Ok(())
     }
 
@@ -213,8 +216,8 @@ impl Controls {
             .as_object_mut()
             .expect("AudioDspSettings serializes to a JSON object");
         object.extend(patch);
-        let updated = serde_json::from_value(value)
-            .map_err(|e| format!("invalid dsp settings: {e}"))?;
+        let updated =
+            serde_json::from_value(value).map_err(|e| format!("invalid dsp settings: {e}"))?;
         self.apply_dsp_settings(updated)
     }
 }
@@ -277,7 +280,9 @@ impl ServerState {
 
         StreamingStatus {
             is_server_running,
-            is_connected: control_platform.is_some() || audio_active || web_connected,
+            is_connected: ((control_platform.is_some() || audio_active)
+                && self.network_stats.get_last_audio_output_time() != 0)
+                || web_connected,
             is_muted: self.network_stats.is_muted(),
             platform: control_platform.unwrap_or_default(),
         }

@@ -41,8 +41,26 @@ pub async fn stop_server(state: State<'_, ServerState>) -> Result<String, String
 }
 
 #[tauri::command]
-pub async fn get_streaming_status(state: State<'_, ServerState>) -> Result<StreamingStatus, String> {
+pub async fn get_streaming_status(
+    state: State<'_, ServerState>,
+) -> Result<StreamingStatus, String> {
     Ok(state.streaming_status().await)
+}
+
+#[tauri::command]
+pub async fn get_session_security(
+    state: State<'_, ServerState>,
+) -> Option<micyou_core::pairing::SessionSecurityState> {
+    if !state.streaming_status().await.is_connected {
+        return None;
+    }
+    let encrypted = state.session_crypto.lock().await.is_some();
+    Some(micyou_core::pairing::SessionSecurityState { encrypted })
+}
+
+#[tauri::command]
+pub fn resolve_pairing(state: State<'_, ServerState>, request_id: String, accept: bool) -> bool {
+    state.pairing_broker.resolve(&request_id, accept)
 }
 
 #[tauri::command]

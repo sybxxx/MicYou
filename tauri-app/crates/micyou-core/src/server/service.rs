@@ -173,9 +173,11 @@ async fn rollback_start(
     crate::transport::tcp::cleanup_session_state(
         &state.active_connection,
         &state.active_audio_session,
+        &state.session_crypto,
     )
     .await;
     join_tasks_bounded(tasks, NETWORK_TASK_JOIN_TIMEOUT).await;
+    *state.session_crypto.lock().await = None;
     state.cancel_token.lock().await.take();
     if let Some(mdns) = state.mdns_manager.lock().await.take() {
         mdns.stop_mdns();
@@ -240,6 +242,11 @@ pub async fn start_server(state: &ServerState, request: StartRequest) -> Result<
     } = request;
     let udp_port = validate_server_port(port, mode)?;
 
+    let security = if mode != ConnectionMode::Web {
+        Some(build_server_security(mode)?)
+    } else {
+        None
+    };
     let _lifecycle_guard = state.lifecycle_gate.enter().await;
     // The lifecycle phase is the single source of truth for "running": a
     // token only exists between a successful begin_start and the next stop.
@@ -302,6 +309,7 @@ pub async fn start_server(state: &ServerState, request: StartRequest) -> Result<
         return start_web(state, port, &bind_addr, audio_tx, &cancel_token).await;
     }
 
+    let (rebind_tx, rebind_rx) = tokio::sync::watch::channel(0u64);
     let (tcp_ready_tx, tcp_ready_rx) = tokio::sync::oneshot::channel();
     let tcp_task = tokio::spawn(crate::transport::tcp::run_tcp_server(
         crate::transport::tcp::TcpServerConfig {
@@ -316,6 +324,10 @@ pub async fn start_server(state: &ServerState, request: StartRequest) -> Result<
             takeover_lock: state.takeover_lock.clone(),
             active_audio_session: state.active_audio_session.clone(),
             plugins: state.plugins.clone(),
+            security: security.expect("non-web startup creates security context"),
+            session_crypto: state.session_crypto.clone(),
+            pairing_broker: state.pairing_broker.clone(),
+            rebind_requests: rebind_rx.clone(),
         },
         tcp_ready_tx,
     ));
@@ -325,6 +337,7 @@ pub async fn start_server(state: &ServerState, request: StartRequest) -> Result<
     let udp_task = tokio::spawn({
         let stats = state.network_stats.clone();
         let session = state.active_audio_session.clone();
+        let session_crypto = state.session_crypto.clone();
         let bind_addr = bind_addr.clone();
         let token = cancel_token.clone();
         async move {
@@ -335,6 +348,8 @@ pub async fn start_server(state: &ServerState, request: StartRequest) -> Result<
                 token,
                 stats,
                 session,
+                session_crypto,
+                rebind_rx,
                 udp_ready_tx,
             )
             .await
@@ -353,6 +368,21 @@ pub async fn start_server(state: &ServerState, request: StartRequest) -> Result<
         return fail_start(state, &cancel_token, vec![tcp_task, udp_task], error).await;
     }
     let mut tasks = vec![tcp_task, udp_task];
+    let watchdog_config = if crate::config::load_server_prefs().listener_watchdog {
+        crate::listener_watchdog::ListenerWatchdogConfig::for_bind(&bind_addr, port)
+    } else {
+        None
+    };
+    tasks.push(tokio::spawn(crate::listener_watchdog::run(
+        watchdog_config,
+        crate::listener_watchdog::ListenerWatchdogDeps {
+            rebind: rebind_tx,
+            mdns: state.mdns_manager.clone(),
+            mdns_port: port,
+            mdns_bind: bind_addr.clone(),
+        },
+        cancel_token.clone(),
+    )));
     // iOS reaches USB mode through usbmuxd instead of adb reverse.
     if mode == ConnectionMode::Usb {
         tasks.push(tokio::spawn(crate::platform::usbmux::run_bridge(
@@ -409,6 +439,7 @@ async fn start_web(
                 let starting = AudioStreamEvent::SessionStarting {
                     expected: ExpectedAudioSession::Bound(0),
                     epoch: generation,
+                    info: None,
                 };
                 if audio_tx.send(starting).await.is_err() {
                     break;
@@ -483,9 +514,11 @@ pub async fn stop_server(state: &ServerState) -> Result<String, String> {
     crate::transport::tcp::cleanup_session_state(
         &state.active_connection,
         &state.active_audio_session,
+        &state.session_crypto,
     )
     .await;
     join_tasks_bounded(tasks, NETWORK_TASK_JOIN_TIMEOUT).await;
+    *state.session_crypto.lock().await = None;
     let audio_result = state
         .lifecycle
         .lock()
@@ -545,14 +578,18 @@ mod tests {
         let prefs = ServerPrefs::default();
         for mode in ["web", "wifi", "usb"] {
             let request =
-                StartRequest::resolve_with_prefs(&prefs, Some(12345), Some(mode), None, None).unwrap();
+                StartRequest::resolve_with_prefs(&prefs, Some(12345), Some(mode), None, None)
+                    .unwrap();
             assert_eq!(request.port, 12345);
         }
     }
 
     #[test]
     fn usb_mode_listens_on_loopback_only() {
-        assert_eq!(listen_address(ConnectionMode::Usb, Some("192.168.8.92".into())), "127.0.0.1");
+        assert_eq!(
+            listen_address(ConnectionMode::Usb, Some("192.168.8.92".into())),
+            "127.0.0.1"
+        );
         assert_eq!(listen_address(ConnectionMode::Usb, None), "127.0.0.1");
         assert_eq!(listen_address(ConnectionMode::Wifi, None), "0.0.0.0");
         assert_eq!(
@@ -603,4 +640,19 @@ mod tests {
         assert_eq!("usb".parse::<ConnectionMode>(), Ok(ConnectionMode::Usb));
         assert!("bluetooth".parse::<ConnectionMode>().is_err());
     }
+}
+
+fn build_server_security(
+    mode: ConnectionMode,
+) -> Result<crate::secure_channel::SharedSecurity, String> {
+    use crate::secure_channel::{SecureHandshake, ServerSecurity};
+    use crate::security::{PairedDeviceStore, ServerIdentity};
+    use std::sync::{Arc, Mutex};
+    let identity = Arc::new(ServerIdentity::load_or_create()?);
+    let store = PairedDeviceStore::load_or_create(crate::security::paired_devices_path())?;
+    Ok(Arc::new(ServerSecurity {
+        handshake: SecureHandshake::with_paired_devices(identity, Arc::new(Mutex::new(store))),
+        require_encryption: mode == ConnectionMode::Wifi
+            && crate::config::load_server_prefs().require_encryption,
+    }))
 }

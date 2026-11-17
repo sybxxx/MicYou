@@ -67,15 +67,24 @@ async fn run_locked(
 ) -> Result<(), String> {
     if request.mode == server::service::ConnectionMode::Usb {
         if jsonl {
-            eprintln!("Setting up USB mode (adb for Android, usbmuxd for iOS) on port {}", request.port);
+            eprintln!(
+                "Setting up USB mode (adb for Android, usbmuxd for iOS) on port {}",
+                request.port
+            );
         } else {
-            println!("Setting up USB mode (adb for Android, usbmuxd for iOS) on port {}", request.port);
+            println!(
+                "Setting up USB mode (adb for Android, usbmuxd for iOS) on port {}",
+                request.port
+            );
         }
         micyou_core::platform::adb::enable_usb_mode(request.port, None)
             .map_err(|e| format!("enable_usb_mode failed: {e}"))?;
     }
 
-    let state = ServerState::new(events, Arc::new(HeadlessHost::new()), None);
+    let mut state = ServerState::new(events, Arc::new(HeadlessHost::new()), None);
+    // Preserve the existing headless policy: first contact is approved and
+    // logged with its SAS; GUI mode keeps an explicit approval dialog.
+    state.pairing_broker = Arc::new(micyou_core::pairing::PairingBroker::new(true));
     let started = server::start_server(&state, request).await?;
     let control_result = if let Some(sink) = jsonl_sink {
         match sink.send_ready(serde_json::json!({

@@ -29,3 +29,58 @@ pub const MDNS_SERVICE_TYPE: &str = "_micyou._tcp.local.";
 pub const MDNS_WEB_SERVICE_TYPE: &str = "_micyou-web._tcp.local.";
 pub const HANDSHAKE_CLIENT_STR: &[u8] = b"MicYouCheck1";
 pub const HANDSHAKE_SERVER_STR: &[u8] = b"MicYouCheck2";
+
+pub const UDP_SECURE_MAGIC: i32 = 0x4D696356; // "MicV"
+pub const SECURE_SUITE_V1: u32 = 1;
+pub const SECURE_TRANSCRIPT_TAG: &[u8] = b"MICYOU-SECURE-V1";
+
+#[cfg(test)]
+mod tests {
+    use super::micyou::*;
+    use prost::Message;
+
+    #[test]
+    fn security_extension_does_not_reuse_upstream_plugin_or_statistics_tags() {
+        let wrapper = MessageWrapper {
+            plugin_message: Some(PluginMessage {
+                topic: "hello".into(),
+                ..Default::default()
+            }),
+            stats: Some(StatsMessage {
+                rtt_ms: 5,
+                ..Default::default()
+            }),
+            secure_client_hello: Some(SecureClientHello {
+                suite_mask: 1,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let encoded = wrapper.encode_to_vec();
+        let decoded = MessageWrapper::decode(encoded.as_slice()).unwrap();
+        assert_eq!(decoded.plugin_message.unwrap().topic, "hello");
+        assert_eq!(decoded.stats.unwrap().rtt_ms, 5);
+        assert_eq!(decoded.secure_client_hello.unwrap().suite_mask, 1);
+        let hello_only = MessageWrapper {
+            secure_client_hello: Some(SecureClientHello {
+                suite_mask: 1,
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+        .encode_to_vec();
+        assert_eq!(&hello_only[..2], &[0xa2, 0x06]); // tag 100, length-delimited
+    }
+
+    #[test]
+    fn audio_health_preserves_legacy_ping_timestamp() {
+        let ping = PingMessage {
+            timestamp: 123,
+            audio_health_supported: true,
+            audio_healthy: true,
+        };
+        let decoded = PingMessage::decode(ping.encode_to_vec().as_slice()).unwrap();
+        assert_eq!(decoded.timestamp, 123);
+        assert!(decoded.audio_health_supported && decoded.audio_healthy);
+    }
+}

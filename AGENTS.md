@@ -24,6 +24,14 @@ flowchart LR
 
 ## Wire protocol
 
+The local `2.2.0+local.1` candidate retains encrypted Wi-Fi pairing, fail-closed
+secure reconnect and audio-health recovery. Secure MessageWrapper fields are
+100–103 (upstream 7 and 8 remain plugin and stats messages); Ping health fields
+are 2 and 3. Phone and desktop candidates must be upgraded together. See
+`docs/local-migration.md` for retained behavior, upgrade checks and rollback.
+Windows user installers must be built with `src-tauri/installer.iss` (Inno Setup),
+never the Tauri NSIS output; use `bun run tauri build --no-bundle` then `iscc`.
+
 - Source of truth: `tauri-app/crates/micyou-protocol/proto/network.proto` (prost); the Android mirror is `composeApp/.../network/Protocol.kt` and must stay in sync, magics included (`0x4D696359` control, `0x4D696355` audio)
 - TCP carries control frames (connect, mute, ping, pong, and desktop-to-phone stats once a second) with a 1 MiB payload cap enforced on both sides; `connect.platform` tells iOS and Android apart
 - UDP carries audio on TCP port + 1; Opus uses 20 ms frames with one FEC packet per group of 12
@@ -37,7 +45,7 @@ flowchart LR
 - `service/AudioService.kt`: foreground service, type `microphone` while streaming and `mediaPlayback` while idle; returns `START_NOT_STICKY` and never reschedules itself (exact alarms throw on Android 14+); swiping the app away stops streaming, removes the notification and stops the service
 - `service/MicYouTileService.kt`: Quick Settings tile that starts and stops streaming
 - Settings live in SharedPreferences (`android_mic_prefs`), not DataStore, modelled as enums in `audio/AudioSettings.kt`; wire constants live in `util/Constants.kt` and `network/Protocol.kt`
-- `AudioStreamViewModel` owns the connection policy: `auto_start` connects once the microphone permission is granted at launch, and `auto_reconnect` retries an unexpected disconnect `reconnect_retry_count` times every `reconnect_interval_seconds`, then repeats the burst every `reconnect_periodic_minutes` (0 = off). An explicit stop or a manual connect cancels the retry loop; retries stay silent and only the final failure opens the error dialog
+- `AudioStreamViewModel` owns initial connection and whole-session retry policy: `auto_start` connects once microphone permission is granted; `auto_reconnect` retries a failed session `reconnect_retry_count` times every `reconnect_interval_seconds`, then repeats every `reconnect_periodic_minutes` (0 = off). Established-stream network recovery stays inside `AudioEngine`, retaining the recording handle. An explicit stop or manual connect cancels retries; only final failure opens the error dialog
 - Haze is reached only through `ui/compose/haze/HazeBridge.kt`, which exists twice: `src/normal` maps onto Haze 2 `hazeBlur`, `src/compat` draws a plain background
 
 ### api21 compat build
@@ -137,10 +145,11 @@ cargo run -p micyou-tui
 ## Testing and QA
 
 - Rust unit tests live mostly in `micyou-core`, plus `micyou-audio`, `micyou-plugin`, `micyou-tui` and `src-tauri`; `micyou-protocol` and `micyou-cli` have none; there are no integration test directories
-- Android has no tests (kotlin-test in the version catalog is unused)
+- Android unit tests under `composeApp/src/test` cover encrypted protocol/pairing, audio-health and session-start policy, discovery/retry policy, and bounded transport writes; run `./gradlew :composeApp:testDebugUnitTest`
 - Gates to keep green: `cargo test`, `cargo clippy`, `bun run build` (the only frontend type check) and `./gradlew :composeApp:assembleDebug`; there is no lint or format wiring, `.prettierrc` exists but nothing runs it
 - End-to-end verification is manual: phone → server → virtual mic; `micyou-cli serve` with `adb reverse` is the quickest desktop side for device tests
 - CI (`.github/workflows/`): `development.yml` builds the debug APK and Tauri bundles on Windows, macOS (arm64 and x86_64) and Linux; `release.yml` and `pre-release.yml` publish GitHub and MirrorChyan releases; Android jobs run with `continue-on-error: true` and never block releases; `opencode.yml` runs an AI review on PR comments
+- The local candidate uses `local-candidate.yml` on `codex/stable-2.2-migration`: required Windows/Android tests and signed artifacts only, no Release publication, one-day artifact retention. Heavy builds stay on GitHub-hosted runners, not the user's computer
 
 ## Toolchain
 

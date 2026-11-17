@@ -53,7 +53,11 @@
       "aecDisabledPipeWireUnavailable": "PipeWire 不可用，AEC 已自動停用",
       "aecDisabledReferenceLost": "AEC 音訊參考流已中斷，已自動停用",
       "aecDisabledUnsupportedOs": "目前系統版本無法擷取系統音訊，AEC 已自動停用",
-      "aecDisabledVirtualSourceMissing": "找不到虛擬音訊來源，AEC 已自動停用"
+      "aecDisabledVirtualSourceMissing": "找不到虛擬音訊來源，AEC 已自動停用",
+      "pairingRequested": "裝置 {device} 請求配對——請在 MicYou 視窗中核對配對碼並點擊允許",
+      "paired": "{device} 已完成配對。",
+      "serverFault": "桌面音訊服務發生故障（{component}）。",
+      "udpAudioWarning": "未收到手機音訊資料，正在等待重新連線。"
     },
     "ipSelector": {
       "allInterfaces": "全部",
@@ -80,6 +84,21 @@
       "bitrate": "即時位元率",
       "totalLatency": "總估算延遲",
       "buffer": "緩衝區時長"
+    },
+    "pairing": {
+      "title": "配對要求",
+      "deviceWantsToPair": "{name} 想要與這部電腦配對。",
+      "compareCode": "請先與手機上顯示的驗證碼核對，一致時再點擊允許。",
+      "approve": "允許",
+      "deny": "拒絕",
+      "expired": "配對請求已過期，請在手機上重新連線並核對新代碼。",
+      "failed": "提交配對決定失敗，請重試。"
+    },
+    "security": {
+      "requireEncryption": "要求 Wi-Fi 用戶端加密連線",
+      "requireEncryptionDesc": "拒絕未加密的 Wi-Fi 用戶端；變更後重新開始傳輸生效。",
+      "unencryptedBanner": "目前工作階段尚未加密",
+      "encryptedBanner": "目前工作階段已加密"
     }
   },
   "settings": {

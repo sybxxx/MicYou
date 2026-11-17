@@ -16,6 +16,7 @@ import type {
   PluginUpdate,
   PluginView,
   ServerPrefs,
+  SessionSecurity,
   StreamingStatus,
   SystemAccentColor,
   TrayMenuStrings,
@@ -39,6 +40,8 @@ export interface Commands {
   };
   stop_server: { args: NoArgs; result: string };
   get_streaming_status: { args: NoArgs; result: StreamingStatus };
+  get_session_security: { args: NoArgs; result: SessionSecurity | null };
+  resolve_pairing: { args: { requestId: string; accept: boolean }; result: boolean };
   set_mute_state: { args: { isMuted: boolean }; result: void };
   set_monitoring: { args: { enabled: boolean }; result: void };
   set_spectrum_streaming: { args: { enabled: boolean }; result: void };
