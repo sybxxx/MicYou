@@ -26,7 +26,7 @@ class TransportWritePolicyTest {
     }
 
     @Test
-    fun pongBypassesQueuedAudio() = runBlocking {
+    fun pongBypassesQueuedAudio() = runBlocking<Unit> {
         val control = Channel<MessageWrapper>(2)
         val audio = Channel<QueuedAudioFrame>(2)
         val pong = MessageWrapper(pong = PongMessage(123))
@@ -39,7 +39,7 @@ class TransportWritePolicyTest {
     }
 
     @Test
-    fun aStalledWriteClosesItsSocketAndUnblocks() = runBlocking {
+    fun aStalledWriteClosesItsSocketAndUnblocks() = runBlocking<Unit> {
         val socketClosed = CompletableDeferred<Unit>()
         var closes = 0
         withTimeout(1_000) {
@@ -54,7 +54,7 @@ class TransportWritePolicyTest {
     }
 
     @Test
-    fun completedWriteCancelsTheCloseGuard() = runBlocking {
+    fun completedWriteCancelsTheCloseGuard() = runBlocking<Unit> {
         var closed = false
         assertEquals(42, withTransportWriteDeadline(timeoutMs = 30, closeTransport = { closed = true }) { 42 })
         delay(60)
@@ -62,7 +62,7 @@ class TransportWritePolicyTest {
     }
 
     @Test
-    fun cancelledWriteCannotCloseALaterTransport() = runBlocking {
+    fun cancelledWriteCannotCloseALaterTransport() = runBlocking<Unit> {
         var closed = false
         val entered = CompletableDeferred<Unit>()
         val writer = launch {

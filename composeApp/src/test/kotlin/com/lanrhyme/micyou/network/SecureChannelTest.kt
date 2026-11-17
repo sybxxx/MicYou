@@ -104,7 +104,7 @@ class SecureChannelTest {
         )
         // TAG-stripped canon: u32be(len)||part per field, in fixed field order.
         val expectedCore =
-            "00000001" + "00000003" + "010203" + "00000003" + "040506" + "00000005" + "506978656c"
+            "00000004" + "00000001" + "00000003" + "010203" + "00000003" + "040506" + "00000005" + "506978656c"
         assertEquals(expectedCore, toHex(SecureChannel.clientHelloCore(hello)))
 
         // The signed core is unaffected by whatever signature the message carries.
@@ -115,7 +115,7 @@ class SecureChannelTest {
         )
 
         assertEquals(
-            "00000001" + "00000000" + "00000000",
+            "00000004" + "00000001" + "00000000" + "00000000",
             toHex(SecureChannel.serverHelloCore(suite = 1, identityPubKey = ByteArray(0), ephemeralPubKey = ByteArray(0)))
         )
     }
@@ -125,7 +125,13 @@ class SecureChannelTest {
         val proto = ProtoBuf { }
         assertEquals("ba06020801", toHex(proto.encodeToByteArray(MessageWrapper(secureResult = SecureResult(accepted = true)))))
         assertEquals("b206040a026162", toHex(proto.encodeToByteArray(MessageWrapper(secureConfirm = SecureConfirm(deviceName = "ab")))))
-        assertEquals("aa06020801", toHex(proto.encodeToByteArray(MessageWrapper(secureServerHello = SecureServerHello(suite = 1)))))
+        val serverHelloBytes = proto.encodeToByteArray(MessageWrapper(secureServerHello = SecureServerHello(suite = 1)))
+        assertEquals("aa06", toHex(serverHelloBytes.copyOfRange(0, 2)))
+        // Kotlin may emit zero-length ByteArray fields; prost omits them. Both are valid
+        // protobuf encodings of the same hello, so signatures use the canonical field cores.
+        val prostHello = proto.decodeFromByteArray<MessageWrapper>(hex("aa06020801")).secureServerHello
+        assertEquals(SecureServerHello(suite = 1), prostHello)
+        assertEquals(prostHello, proto.decodeFromByteArray<MessageWrapper>(serverHelloBytes).secureServerHello)
 
         val decoded = proto.decodeFromByteArray<MessageWrapper>(
             proto.encodeToByteArray(MessageWrapper(secureClientHello = SecureClientHello(deviceName = "phone")))
