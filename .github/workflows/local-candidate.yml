@@ -109,6 +109,8 @@ jobs:
           java-version: '21'
           distribution: liberica
       - uses: gradle/actions/setup-gradle@v6
+        with:
+          cache-read-only: false
       - name: Prepare Android SDK
         uses: android-actions/setup-android@v4
         with:
