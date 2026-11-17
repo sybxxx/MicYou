@@ -110,7 +110,10 @@ jobs:
           distribution: liberica
       - uses: gradle/actions/setup-gradle@v6
       - name: Prepare Android SDK
-        run: sdkmanager 'platforms;android-37.0' 'build-tools;36.1.0'
+        uses: android-actions/setup-android@v4
+        with:
+          packages: 'platform-tools platforms;android-37.0 build-tools;36.1.0'
+          log-accepted-android-sdk-licenses: 'false'
       - name: Prepare existing release signing
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
