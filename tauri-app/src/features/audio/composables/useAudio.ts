@@ -6,7 +6,7 @@ import { useListeners } from '@/shared/lib/listeners';
 /**
  * Composable for managing audio status, mute state, audio level, metrics and warning dialogs
  */
-export function useAudio() {
+export function useAudio(visualsActive: () => boolean = () => true) {
   // Real-time audio input volume level (0-100)
   const audioLevel = ref(0);
   
@@ -98,10 +98,12 @@ export function useAudio() {
     };
     void Promise.all([
       track(onEvent('audio-level', (payload) => {
+        if (!visualsActive()) return;
         audioLevel.value = payload;
         if (payload > 0) hideUdpWarning();
       })),
       track(onEvent('audio-metrics', (payload) => {
+        if (!visualsActive()) return;
         audioMetrics.value = payload;
         if (payload.bitrate > 0) hideUdpWarning();
       })),

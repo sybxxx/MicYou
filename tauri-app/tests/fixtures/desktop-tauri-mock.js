@@ -9,6 +9,7 @@
     unhandled: [],
     notifications: [],
     visible: true,
+    minimized: false,
     encrypted: false,
     resolvePairingResult: true,
     size: { width: 800, height: 600 },
@@ -58,11 +59,17 @@
       if (command === 'plugin:window|scale_factor') return 1;
       if (command === 'plugin:window|inner_size') return { ...state.size };
       if (command === 'plugin:window|set_size') { state.size = { width: args.size.width, height: args.size.height }; return; }
-      if (command === 'plugin:window|is_minimized') return false;
+      if (command === 'plugin:window|minimize' || command === 'minimize_main_window') {
+        state.minimized = true;
+        state.emit('tauri://blur');
+        state.emit('tauri://resize', { width: 0, height: 0 });
+        return;
+      }
+      if (command === 'plugin:window|is_minimized') return state.minimized;
       if (command === 'plugin:window|is_focused') return true;
       if (command === 'plugin:window|is_visible') return state.visible;
-      if (command === 'show_main_window') { state.visible = true; return; }
-      if (command === 'hide_main_window') { state.visible = false; return; }
+      if (command === 'show_main_window') { state.visible = true; state.minimized = false; state.emit('tauri://focus'); return; }
+      if (command === 'hide_main_window') { state.visible = false; state.emit('tauri://blur'); return; }
       if (command.startsWith('plugin:window|') || command.startsWith('set_') || command.startsWith('save_') || command.startsWith('update_')) return;
       state.unhandled.push(command);
       return null;

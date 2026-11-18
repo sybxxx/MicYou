@@ -82,7 +82,7 @@ pub async fn check_vbcable() -> Result<bool, String> {
 #[cfg(feature = "vbcable")]
 #[tauri::command]
 pub async fn install_vbcable(app: AppHandle) -> Result<vbcable::VBCableResult, String> {
-    Ok(vbcable::install(Arc::new(crate::events::TauriEventSink(app))).await)
+    Ok(vbcable::install(Arc::new(crate::events::TauriEventSink::new(app))).await)
 }
 
 #[cfg(not(feature = "vbcable"))]

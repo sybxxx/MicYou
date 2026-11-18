@@ -44,6 +44,10 @@ export function onFocusChanged(handler: (focused: boolean) => void): Promise<Unl
   return getCurrentWindow().onFocusChanged(({ payload }) => handler(payload));
 }
 
+export function onResized(handler: () => void): Promise<UnlistenFn> {
+  return getCurrentWindow().onResized(handler);
+}
+
 /**
  * Intercepts compositor close requests (Alt+F4, taskbar, window menu); the
  * window stays open and the handler decides what to do.

@@ -95,6 +95,7 @@ import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { Activity as ActivityIcon, TrendingUp as TrendingUpIcon, ActivitySquare as WaveformIcon, Settings2 as Settings2Icon } from '@lucide/vue'
 
 const props = defineProps<{
+  active?: boolean
   serverState: string
   audioLevel: number
   metrics: {
@@ -124,7 +125,7 @@ const maxTrendPoints = 30
 const trendHistory = ref<number[]>([])
 
 watch(() => props.metrics?.latencyMs, (newVal) => {
-  if (newVal !== undefined && newVal !== null) {
+  if (props.active !== false && newVal !== undefined && newVal !== null) {
     trendHistory.value.push(newVal)
     if (trendHistory.value.length > maxTrendPoints) {
       trendHistory.value.shift()
@@ -158,18 +159,18 @@ const stopWaveform = () => {
 }
 const startWaveform = () => {
   stopWaveform()
-  if (props.serverState !== 'streaming') return
+  if (props.active === false || props.serverState !== 'streaming') return
   waveformTimer = setInterval(() => {
     waveform.value = [...waveform.value.slice(1), props.audioLevel]
   }, 100)
 }
 
-watch(() => props.serverState, (newVal) => {
-  if (newVal === 'streaming') {
+watch([() => props.serverState, () => props.active], ([newVal, active]) => {
+  if (newVal === 'streaming' && active !== false) {
     startWaveform()
   } else {
     stopWaveform()
-    waveform.value = Array(waveformSize).fill(0)
+    if (newVal !== 'streaming') waveform.value = Array(waveformSize).fill(0)
   }
 })
 

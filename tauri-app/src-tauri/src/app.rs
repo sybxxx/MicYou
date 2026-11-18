@@ -55,7 +55,7 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     });
 
     let state = ServerState::new(
-        Arc::new(TauriEventSink(handle.clone())),
+        Arc::new(TauriEventSink::new(handle.clone())),
         Arc::new(TauriHost(handle.clone())),
         handle.path().resource_dir().ok(),
     );

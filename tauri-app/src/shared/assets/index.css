@@ -510,6 +510,14 @@
   animation: dot-pulse 1.5s cubic-bezier(0.45, 0, 0.55, 1) infinite;
 }
 
+/* Hiding/minimizing pauses decoration without suspending connection handling. */
+.visuals-paused,
+.visuals-paused *,
+.visuals-paused *::before,
+.visuals-paused *::after {
+  animation-play-state: paused !important;
+}
+
 /* Respect the system "reduce motion" setting everywhere. */
 @media (prefers-reduced-motion: reduce) {
   *,

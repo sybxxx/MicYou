@@ -24,7 +24,7 @@ flowchart LR
 
 ## Wire protocol
 
-The local `2.2.0+local.1` candidate retains encrypted Wi-Fi pairing, fail-closed
+The local `2.2.0+local.2` candidate retains encrypted Wi-Fi pairing, fail-closed
 secure reconnect and audio-health recovery. Secure MessageWrapper fields are
 100–103 (upstream 7 and 8 remain plugin and stats messages); Ping health fields
 are 2 and 3. Phone and desktop candidates must be upgraded together. See
@@ -104,6 +104,7 @@ Shared config in `~/.config/micyou/` (Linux) or `%APPDATA%\micyou` (Windows), re
 - AEC availability has one source, `features/audio/composables/useAecStatus.ts` (`get_aec_status` plus `aec-status-changed`): capability reasons (`unsupported_os`, `permission_denied`) disable the toggle, runtime reasons only report it
 - Rounded window corners are per platform: DWM corner preference on Windows, NSWindow corner radius via vibrancy on macOS, and a `clip-path` on `body` only under `.platform-linux` — do not clip the document on Windows/macOS, the full-page clip mask made streaming animations stutter in WebView2
 - Continuous animations (the streaming glow and status dot loops) are CSS keyframe animations on transform/opacity so the compositor drives them; keep JS animation libraries (anime.js) for one-shot interactions only
+- Main-window visualization pauses while hidden/minimized: `useVisualActivity` gates the ring, waveform and CSS animation state; `TauriEventSink` limits audio-level IPC to 75 ms and sends visual telemetry only to the visible, non-minimized main window. Never gate connection, pairing, security, mute or tray events with visual activity, or suspend the whole WebView to save CPU
 - The settings window is a separate webview (`features/settings/components/SettingsWindow.vue` plus one component per page under `sections/`); it shares state with the main window through `useStorage` storage events and `emitToWindow('main', …)`, drags from any non-control element marked `data-drag-surface`, and dialogs inside a section use `<Teleport to="body">` to escape the page transition
 - Styling: the theme lives in the `@theme inline` block of `src/shared/assets/index.css` (no `tailwind.config.js` or PostCSS config); Material 3 HSL variables, 8 themes in light and dark via `.dark`; shadcn color names (`popover`, `accent`, `muted`, …) are aliased to Material 3 tokens; a scoped `<style>` using `@apply` needs `@reference "@/shared/assets/index.css";`; `cn()` = `twMerge(clsx(...))`
 - `src/shared/components/ui/` holds only what is used (reka-ui `select`, `MD3Slider`, `MD3Switch`); use `MD3Switch` for toggles

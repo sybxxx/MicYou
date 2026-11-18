@@ -1,6 +1,6 @@
 ﻿#define MyAppName "MicYou"
 #ifndef MyAppVersion
-  #define MyAppVersion "2.2.0+local.1"
+  #define MyAppVersion "2.2.0+local.2"
 #endif
 #define MyAppPublisher "LanRhyme"
 #define MyAppURL "https://github.com/MicYou-Dev/MicYou"

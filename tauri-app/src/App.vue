@@ -17,6 +17,7 @@ import { useServer, type ConnectionMode } from './features/connection/composable
 import { useAudio } from './features/audio/composables/useAudio';
 import { useTheme, saveUiPrefs } from './features/theme/composables/useTheme';
 import { useWindow } from './features/window/composables/useWindow';
+import { useVisualActivity } from './features/window/composables/useVisualActivity';
 import { useTray } from './features/tray/useTray';
 import { useWindowEffects } from './features/window/composables/useWindowEffects';
 import { useWindowTransition } from './features/window/composables/useWindowTransition';
@@ -49,7 +50,7 @@ const dragSurfaceClass = isMacOS ? 'cursor-default' : 'cursor-grab active:cursor
 const { t, locale } = useI18n();
 
 // Initialize shared features
-const audio = useAudio();
+const audio = useAudio(() => visualsActive.value);
 const server = useServer({
   audioLevel: audio.audioLevel,
   isMuted: audio.isMuted,
@@ -108,6 +109,7 @@ const windowEffects = useWindowEffects({
 const rootRef = ref<HTMLElement | null>(null);
 const transition = useWindowTransition(rootRef, { suspendEffects: windowEffects.suspend });
 const win = useWindow({ exit: transition.exit, enter: transition.enter, prepare: windowEffects.apply });
+const visualsActive = useVisualActivity(win.isHidden);
 
 // IP configuration selector panel behavior
 const ipMenuRef = ref<HTMLDivElement | null>(null);
@@ -450,7 +452,7 @@ onUnmounted(() => {
 
 <template>
   <OnboardingWizard :visible="showOnboarding" @complete="showOnboarding = false" />
-  <div ref="rootRef" class="relative w-full h-screen overflow-hidden overscroll-none text-foreground bg-transparent origin-center">
+  <div ref="rootRef" class="relative w-full h-screen overflow-hidden overscroll-none text-foreground bg-transparent origin-center" :class="{ 'visuals-paused': !visualsActive }">
     <!-- Rounded window background; pocket mode draws only its own bar and menus -->
     <div v-if="!pocketMode" data-blur-region class="absolute inset-0 -z-10 rounded-2xl bg-surface-container" />
 
@@ -658,7 +660,7 @@ onUnmounted(() => {
         <div class="haze-surface rounded-2xl flex flex-col items-center justify-center relative overflow-hidden group transition-all duration-300" :class="audio.showMonitoringPanel.value ? 'w-[44%]' : 'w-[62%]'">
           <!-- Central Visualizer & Action Button -->
           <div class="relative w-64 h-64 flex items-center justify-center absolute-center">
-            <AudioRing v-if="server.serverState.value === 'streaming'" :level="audio.audioLevel.value">
+            <AudioRing v-if="server.serverState.value === 'streaming'" :level="audio.audioLevel.value" :active="visualsActive">
               <!-- Central Button When Streaming -->
               <div class="relative flex items-center justify-center">
                 <div class="absolute inset-0 bg-error/30 rounded-full blur-md glow-breathe"></div>
@@ -682,7 +684,7 @@ onUnmounted(() => {
         <!-- Right Panel (Monitoring) -->
         <Transition name="panel">
           <div v-if="audio.showMonitoringPanel.value" class="w-[28%] min-w-0">
-            <MonitoringPanel :serverState="server.serverState.value" :audioLevel="audio.audioLevel.value" :metrics="audio.audioMetrics.value" />
+            <MonitoringPanel :serverState="server.serverState.value" :audioLevel="audio.audioLevel.value" :metrics="audio.audioMetrics.value" :active="visualsActive" />
           </div>
         </Transition>
       </div>
