@@ -24,12 +24,12 @@ flowchart LR
 
 ## Wire protocol
 
-The local `2.2.0+local.2` candidate retains encrypted Wi-Fi pairing, fail-closed
+The local 2.2.0 candidates retain encrypted Wi-Fi pairing, fail-closed
 secure reconnect and audio-health recovery. Secure MessageWrapper fields are
 100–103 (upstream 7 and 8 remain plugin and stats messages); Ping health fields
-are 2 and 3. The initial alpha-to-stable migration upgrades both ends together;
-the desktop-only `local.2` performance fix remains compatible with `local.1`
-Android. See
+are 2 and 3. The initial alpha-to-stable migration upgrades both ends together.
+The `local.2` desktop visualization fix and `local.3` Android Opus CPU fix do
+not change that protocol and do not require replacing the other end. See
 `docs/local-migration.md` for retained behavior, upgrade checks and rollback.
 Windows user installers must be built with `src-tauri/installer.iss` (Inno Setup),
 never the Tauri NSIS output; use `bun run tauri build --no-bundle` then `iscc`.

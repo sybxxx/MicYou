@@ -119,6 +119,15 @@ internal enum class AudioReadStatus { Data, Waiting, Failed, Stalled }
 
 /** libopus 支持的采样率；44.1kHz 不在其中，捕获时会映射到 48kHz。 */
 private val OPUS_SAMPLE_RATES = intArrayOf(8000, 12000, 16000, 24000, 48000)
+private const val OPUS_VOICE_COMPLEXITY = 5
+
+internal fun opusSamplesPerFrame(sampleRate: Int): Int = (sampleRate * 20) / 1000
+
+internal fun createOpusVoiceEncoder(sampleRate: Int, channels: Int): OpusEncoder =
+    OpusEncoder(sampleRate, channels, OpusApplication.OPUS_APPLICATION_VOIP).apply {
+        // Reduce ongoing software encoding work without changing the bitrate policy.
+        setComplexity(OPUS_VOICE_COMPLEXITY)
+    }
 
 internal fun classifyAudioRead(
     readCount: Int,
@@ -762,8 +771,8 @@ class AudioEngine constructor() {
                         // Opus 编码：固定 20ms 帧。AudioRecord 返回的块大小任意，
                         // 先把 PCM 转成 Short 累积到 opusPcmAccumulator，凑满一帧再编码发送。
                         val opusChannels = if (channelCount == ChannelCount.Stereo) 2 else 1
-                        val opusFrameSamples = (opusSampleRate * 20) / 1000
-                        val opusEncoder = OpusEncoder(opusSampleRate, opusChannels, OpusApplication.OPUS_APPLICATION_VOIP)
+                        val opusFrameSamples = opusSamplesPerFrame(opusSampleRate)
+                        val opusEncoder = createOpusVoiceEncoder(opusSampleRate, opusChannels)
                         val opusEncodedBuf = ByteArray(4000) // Concentus 要求输出缓冲区至少 4000 字节
                         val pcmShortBuf = ShortArray((readBufSize / bytesPerSample).coerceAtLeast(1))
                         val opusPcmAccumulator = ShortArray(opusFrameSamples * opusChannels * 2)
