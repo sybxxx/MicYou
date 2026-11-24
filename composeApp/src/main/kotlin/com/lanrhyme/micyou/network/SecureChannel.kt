@@ -71,16 +71,16 @@ object SecureChannel {
         val isAlternate = target != anchor
         val anchorPinned = settings.getBoolean("secure_required_peer_${anchor.host}", false)
         // Older releases stored the IP alone. An explicit connection to that
-        // address may compare a new SAS after a desktop reinstall; an automatic
-        // address change can reuse only a unique identity bound to the anchor
-        // or (if there is no anchor history) to the dialed address itself.
-        val rememberedKeys = if (authenticatedServerKey != null) {
-            setOf(authenticatedServerKey)
-        } else {
-            val anchorKeys = pairings.filterValues { it == anchor.host }.keys
-            if (isAlternate && anchorKeys.isEmpty() && !anchorPinned) {
-                pairings.filterValues { it == target.host }.keys
-            } else anchorKeys
+        // address may compare a new SAS after a desktop reinstall. If it has
+        // no address history (e.g. a user-entered hostname), retain the ability
+        // to reconnect to a known key after verifying its signature. Neither
+        // global pairings nor a different PC previously paired at a discovered
+        // address can authenticate an automatic move away from the anchor.
+        val anchorKeys = pairings.filterValues { it == anchor.host }.keys
+        val rememberedKeys = when {
+            authenticatedServerKey != null -> setOf(authenticatedServerKey)
+            !isAlternate && anchorKeys.isEmpty() && !anchorPinned -> pairings.keys
+            else -> anchorKeys
         }
         val acceptedKeys = when {
             authenticatedServerKey != null -> rememberedKeys
@@ -89,7 +89,7 @@ object SecureChannel {
             else -> emptySet()
         }
         return ServerIdentityExpectation(
-            requiresEncryption = isAlternate || rememberedKeys.isNotEmpty() ||
+            requiresEncryption = isAlternate || authenticatedServerKey != null || anchorKeys.isNotEmpty() ||
                 anchorPinned ||
                 settings.getBoolean("secure_required_peer_${target.host}", false),
             acceptedKeys = acceptedKeys,
