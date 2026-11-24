@@ -1690,9 +1690,7 @@ class AudioEngine constructor() {
             val transcript = SecureChannel.transcriptHash(chCore, shCore)
             val secrets = SecureChannel.deriveHandshakeSecrets(transcript, shared)
 
-            val knownServer = expectation.allowRememberedPairing &&
-                SecureChannel.pairedServerDisplayName(secureSettings, serverHello.identityPubKey) != null
-            if (!knownServer) {
+            if (!expectation.canReusePairing(serverHello.identityPubKey)) {
                 val sas = SecureChannel.sasText(secrets.sasValue)
                 Logger.i("AudioEngine", "First secure contact with $peer; SAS $sas")
                 pairingDeferred = CompletableDeferred()

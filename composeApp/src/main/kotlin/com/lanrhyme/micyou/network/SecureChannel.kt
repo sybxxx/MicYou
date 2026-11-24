@@ -36,13 +36,18 @@ class HandshakeSecrets(val keys: SessionKeys, val sasValue: Long)
 
 /** Policy for the selected peer, independent of the mDNS address used to dial it. */
 internal data class ServerIdentityExpectation(
-    val pinnedKeys: Set<String>,
     val requiresEncryption: Boolean,
-    val allowRememberedPairing: Boolean,
-    private val ambiguousAlternate: Boolean
+    // null allows a new, validly signed key to reach SAS; empty rejects an ambiguous alternate.
+    private val acceptedKeys: Set<String>?,
+    private val rememberedKeys: Set<String>
 ) {
     fun matches(publicKey: ByteArray): Boolean =
-        !ambiguousAlternate && (pinnedKeys.isEmpty() || SecureChannel.pairedServerStorageKey(publicKey) in pinnedKeys)
+        acceptedKeys == null || SecureChannel.pairedServerStorageKey(publicKey) in acceptedKeys
+
+    fun canReusePairing(publicKey: ByteArray): Boolean {
+        val key = SecureChannel.pairedServerStorageKey(publicKey)
+        return key in rememberedKeys && (acceptedKeys == null || key in acceptedKeys)
+    }
 }
 
 object SecureChannel {
@@ -63,18 +68,32 @@ object SecureChannel {
         authenticatedServerKey: String?
     ): ServerIdentityExpectation {
         val pairings = settings.getStringEntries(SECURE_PAIRED_SERVER_KEY_PREFIX)
-        // Older releases stored the IP alone; keep that association as the
-        // authoritative anchor, not the unverified address from discovery.
-        val pinnedKeys = authenticatedServerKey?.let(::setOf)
-            ?: pairings.filterValues { it == anchor.host }.keys
         val isAlternate = target != anchor
-        val ambiguousAlternate = isAlternate && pinnedKeys.size > 1
+        val anchorPinned = settings.getBoolean("secure_required_peer_${anchor.host}", false)
+        // Older releases stored the IP alone. An explicit connection to that
+        // address may compare a new SAS after a desktop reinstall; an automatic
+        // address change can reuse only a unique identity bound to the anchor
+        // or (if there is no anchor history) to the dialed address itself.
+        val rememberedKeys = if (authenticatedServerKey != null) {
+            setOf(authenticatedServerKey)
+        } else {
+            val anchorKeys = pairings.filterValues { it == anchor.host }.keys
+            if (isAlternate && anchorKeys.isEmpty() && !anchorPinned) {
+                pairings.filterValues { it == target.host }.keys
+            } else anchorKeys
+        }
+        val acceptedKeys = when {
+            authenticatedServerKey != null -> rememberedKeys
+            !isAlternate || rememberedKeys.isEmpty() -> null
+            rememberedKeys.size == 1 -> rememberedKeys
+            else -> emptySet()
+        }
         return ServerIdentityExpectation(
-            pinnedKeys = pinnedKeys,
-            requiresEncryption = isAlternate || pinnedKeys.isNotEmpty() ||
-                peerRequiresEncryption(settings, anchor.host) || peerRequiresEncryption(settings, target.host),
-            allowRememberedPairing = !isAlternate || pinnedKeys.size == 1,
-            ambiguousAlternate = ambiguousAlternate
+            requiresEncryption = isAlternate || rememberedKeys.isNotEmpty() ||
+                anchorPinned ||
+                settings.getBoolean("secure_required_peer_${target.host}", false),
+            acceptedKeys = acceptedKeys,
+            rememberedKeys = rememberedKeys
         )
     }
 

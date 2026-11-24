@@ -431,9 +431,10 @@ class SecureChannelTest {
         val expectation = SecureChannel.serverIdentityExpectation(settings, anchor, replacement, null)
 
         assertTrue(expectation.requiresEncryption)
-        assertTrue(expectation.allowRememberedPairing)
+        assertTrue(expectation.canReusePairing(pairedKey))
         assertTrue(expectation.matches(pairedKey))
         assertFalse(expectation.matches(otherKnownKey))
+        assertFalse(expectation.canReusePairing(otherKnownKey))
     }
 
     @Test
@@ -442,13 +443,74 @@ class SecureChannelTest {
         val anchor = ConnectionEndpoint("fd00::141", 8554)
         val alternate = ConnectionEndpoint("192.168.0.141", 8554)
         val cachedKey = ByteArray(32) { 11 }
-        SecureChannel.rememberPairedServer(settings, cachedKey, alternate.host)
+        SecureChannel.rememberPairedServer(settings, cachedKey, "192.168.0.142")
 
         val expectation = SecureChannel.serverIdentityExpectation(settings, anchor, alternate, null)
 
         assertTrue(expectation.requiresEncryption)
-        assertFalse(expectation.allowRememberedPairing)
+        assertTrue(expectation.matches(cachedKey))
+        assertFalse(expectation.canReusePairing(cachedKey))
         assertFalse(SecureChannel.serverIdentityExpectation(settings, anchor, anchor, null).requiresEncryption)
+    }
+
+    @Test
+    fun alternateCanReuseItsOwnUniquePairingWhenAnchorHasNoIdentityHistory() {
+        val settings = FakeSettings()
+        val anchor = ConnectionEndpoint("fd00::141", 8554)
+        val alternate = ConnectionEndpoint("192.168.0.141", 8554)
+        val pairedKey = ByteArray(32) { 11 }
+        val wrongKey = ByteArray(32) { 22 }
+        SecureChannel.rememberPairedServer(settings, pairedKey, alternate.host)
+
+        val remembered = SecureChannel.serverIdentityExpectation(settings, anchor, alternate, null)
+        assertTrue(remembered.requiresEncryption)
+        assertTrue(remembered.matches(pairedKey))
+        assertTrue(remembered.canReusePairing(pairedKey))
+        assertFalse(remembered.matches(wrongKey))
+
+        // A secure-only anchor with no trustworthy current key does not borrow a target key.
+        SecureChannel.pinSecurePeer(settings, anchor.host)
+        val pinnedAnchor = SecureChannel.serverIdentityExpectation(settings, anchor, alternate, null)
+        assertTrue(pinnedAnchor.requiresEncryption)
+        assertFalse(pinnedAnchor.canReusePairing(pairedKey))
+    }
+
+    @Test
+    fun alternateCannotChooseBetweenMultipleHistoricalKeysAtItsOwnAddress() {
+        val settings = FakeSettings()
+        val anchor = ConnectionEndpoint("fd00::141", 8554)
+        val alternate = ConnectionEndpoint("192.168.0.141", 8554)
+        val original = ByteArray(32) { 11 }
+        val reused = ByteArray(32) { 22 }
+        SecureChannel.rememberPairedServer(settings, original, alternate.host)
+        SecureChannel.rememberPairedServer(settings, reused, alternate.host)
+
+        val expectation = SecureChannel.serverIdentityExpectation(settings, anchor, alternate, null)
+        assertTrue(expectation.requiresEncryption)
+        assertFalse(expectation.matches(original))
+        assertFalse(expectation.matches(reused))
+        assertFalse(expectation.canReusePairing(original))
+    }
+
+    @Test
+    fun explicitOriginalAddressCanPairAgainAfterTheDesktopIdentityChanges() {
+        val settings = FakeSettings()
+        val anchor = ConnectionEndpoint("192.168.0.141", 8554)
+        val originalKey = ByteArray(32) { 11 }
+        val reinstalledDesktopKey = ByteArray(32) { 22 }
+        val knownFromAnotherAddress = ByteArray(32) { 33 }
+        SecureChannel.rememberPairedServer(settings, originalKey, anchor.host)
+        SecureChannel.rememberPairedServer(settings, knownFromAnotherAddress, "192.168.0.142")
+
+        val expectation = SecureChannel.serverIdentityExpectation(settings, anchor, anchor, null)
+
+        assertTrue(expectation.requiresEncryption)
+        assertTrue(expectation.matches(originalKey))
+        assertTrue(expectation.canReusePairing(originalKey))
+        assertTrue(expectation.matches(reinstalledDesktopKey))
+        assertFalse(expectation.canReusePairing(reinstalledDesktopKey))
+        assertTrue(expectation.matches(knownFromAnotherAddress))
+        assertFalse(expectation.canReusePairing(knownFromAnotherAddress))
     }
 
     @Test
@@ -465,7 +527,9 @@ class SecureChannelTest {
 
         assertTrue(expectation.requiresEncryption)
         assertTrue(expectation.matches(authenticated))
+        assertTrue(expectation.canReusePairing(authenticated))
         assertFalse(expectation.matches(earlier))
+        assertFalse(expectation.canReusePairing(earlier))
     }
 
     @Test
@@ -482,7 +546,7 @@ class SecureChannelTest {
         assertTrue(ambiguous.requiresEncryption)
         assertFalse(ambiguous.matches(original))
         assertFalse(ambiguous.matches(reusedAddress))
-        assertFalse(ambiguous.allowRememberedPairing)
+        assertFalse(ambiguous.canReusePairing(original))
 
         val authenticated = SecureChannel.serverIdentityExpectation(
             settings, anchor, alternate, SecureChannel.pairedServerStorageKey(original)
