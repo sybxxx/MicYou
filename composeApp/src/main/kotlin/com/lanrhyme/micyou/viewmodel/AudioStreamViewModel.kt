@@ -34,14 +34,13 @@ import com.lanrhyme.micyou.audio.ChannelCount
 import com.lanrhyme.micyou.audio.SampleRate
 import com.lanrhyme.micyou.audio.availableAudioFormats
 import com.lanrhyme.micyou.audio.defaultAudioFormat
-import com.lanrhyme.micyou.network.calculateUdpPort
+import com.lanrhyme.micyou.network.ConnectionEndpoint
 import com.lanrhyme.micyou.network.ConnectionErrorDetails
 import com.lanrhyme.micyou.network.ConnectionErrorHelper
 import com.lanrhyme.micyou.network.DeviceDiscoveryManager
 import com.lanrhyme.micyou.network.DiscoveredDevice
+import com.lanrhyme.micyou.network.SelectedDiscoveredDevice
 import com.lanrhyme.micyou.network.WifiNetworkMonitor
-import com.lanrhyme.micyou.network.selectSingleDiscoveredDevice
-import com.lanrhyme.micyou.settings.Settings
 import com.lanrhyme.micyou.settings.SettingsFactory
 import com.lanrhyme.micyou.R
 import com.lanrhyme.micyou.util.getString
@@ -71,7 +70,8 @@ data class AudioStreamUiState(
 
     val androidAudioSourceName: String = "Mic",
     val isEncrypted: Boolean = false,
-    val pairingPrompt: AudioEngine.PairingPrompt? = null
+    val pairingPrompt: AudioEngine.PairingPrompt? = null,
+    val selectedDiscoveredName: String? = null
 )
 
 class AudioStreamViewModel : ViewModel() {
@@ -107,6 +107,9 @@ class AudioStreamViewModel : ViewModel() {
     val isDiscovering: StateFlow<Boolean> = discoveryManager.isDiscovering
 
     private val settings = SettingsFactory.getSettings()
+    private var selectedDiscovery: SelectedDiscoveredDevice? = null
+    private var activeDiscovery: SelectedDiscoveredDevice? = null
+    private var manualTarget = false
     private var isStartStreamRequestPending = false
     private var isStopStreamRequestPending = false
 
@@ -116,14 +119,18 @@ class AudioStreamViewModel : ViewModel() {
     private var reconnectGeneration = 0L
     private var reconnectJob: Job? = null
 
+    private companion object {
+        const val WIFI_SERVICE_NAME = "wifi_discovered_service_name"
+        const val USB_PORT = "usb_port"
+    }
+
     init {
         loadSettings()
         setupAudioEngineObservers()
         auxiliaryScope.launch {
             wifiNetworkMonitor.networkAvailableEvents.collect {
                 if (closed.get() || _uiState.value.mode != ConnectionMode.Wifi) return@collect
-                discoveryManager.stopDiscovery()
-                discoveryManager.startDiscovery()
+                restartDiscovery()
                 _audioEngine.wakeupReconnect()
             }
         }
@@ -131,12 +138,7 @@ class AudioStreamViewModel : ViewModel() {
         auxiliaryScope.launch {
             discoveryManager.discoveredDevices.collect { devices ->
                 if (closed.get() || _uiState.value.mode != ConnectionMode.Wifi) return@collect
-                selectSingleDiscoveredDevice(devices)?.let { device ->
-                    _uiState.update { it.copy(ipAddress = device.hostAddress, port = device.port.toString()) }
-                    settings.putString("ip_address", device.hostAddress)
-                    settings.putString("port", device.port.toString())
-                    _audioEngine.updateTarget(device.hostAddress, device.port)
-                }
+                refreshDiscoverySelections(devices)
             }
         }
         if (_uiState.value.mode == ConnectionMode.Wifi) {
@@ -146,33 +148,48 @@ class AudioStreamViewModel : ViewModel() {
 
     private fun loadSettings() {
         val savedModeName = settings.getString("connection_mode", ConnectionMode.Wifi.name)
-    val savedMode = when (savedModeName) {
+        val savedMode = when (savedModeName) {
             "WifiUdp" -> ConnectionMode.Wifi
             else -> try { ConnectionMode.valueOf(savedModeName) } catch(e: Exception) { ConnectionMode.Wifi }
         }
         val effectiveMode = savedMode
         val savedProtocolName = settings.getString("transport_protocol", TransportProtocol.Both.name)
         val savedProtocol = try { TransportProtocol.valueOf(savedProtocolName) } catch(e: Exception) { TransportProtocol.Both }
-    val savedIp = settings.getString("ip_address", "192.168.1.5")
-    val savedPort = settings.getString("port", Constants.DEFAULT_TCP_PORT.toString())
-    val savedSampleRateName = settings.getString("sample_rate", SampleRate.Rate48000.name)
-    val savedSampleRate = try { SampleRate.valueOf(savedSampleRateName) } catch(e: Exception) { SampleRate.Rate48000 }
-    val savedChannelCountName = settings.getString("channel_count", ChannelCount.Stereo.name)
-    val savedChannelCount = try { ChannelCount.valueOf(savedChannelCountName) } catch(e: Exception) { ChannelCount.Stereo }
-    val savedAudioFormatName = settings.getString("audio_format", defaultAudioFormat().name)
-    val savedAudioFormat = try { AudioFormat.valueOf(savedAudioFormatName) } catch(e: Exception) { defaultAudioFormat() }
-    // 校验已保存的格式在当前设备是否可用，不可用则回退到安全默认值
-    val effectiveAudioFormat = if (availableAudioFormats().contains(savedAudioFormat)) savedAudioFormat else defaultAudioFormat()
+        val storedIp = settings.getString("ip_address", "")
+        val savedIp = storedIp.ifBlank { "192.168.1.5" }
+        val savedPort = settings.getString("port", Constants.DEFAULT_TCP_PORT.toString())
+        val savedSampleRateName = settings.getString("sample_rate", SampleRate.Rate48000.name)
+        val savedSampleRate = try { SampleRate.valueOf(savedSampleRateName) } catch(e: Exception) { SampleRate.Rate48000 }
+        val savedChannelCountName = settings.getString("channel_count", ChannelCount.Stereo.name)
+        val savedChannelCount = try { ChannelCount.valueOf(savedChannelCountName) } catch(e: Exception) { ChannelCount.Stereo }
+        val savedAudioFormatName = settings.getString("audio_format", defaultAudioFormat().name)
+        val savedAudioFormat = try { AudioFormat.valueOf(savedAudioFormatName) } catch(e: Exception) { defaultAudioFormat() }
+        // 校验已保存的格式在当前设备是否可用，不可用则回退到安全默认值
+        val effectiveAudioFormat = if (availableAudioFormats().contains(savedAudioFormat)) savedAudioFormat else defaultAudioFormat()
 
-    val savedAndroidAudioSourceName = settings.getString("android_audio_source", "Mic")
-    val savedIsAutoConfig = settings.getBoolean("is_auto_config", true)
+        val savedAndroidAudioSourceName = settings.getString("android_audio_source", "Mic")
+        val savedIsAutoConfig = settings.getBoolean("is_auto_config", true)
+        val anchor = ConnectionEndpoint(
+            savedIp,
+            savedPort.toIntOrNull()?.takeIf { it in 1..65535 } ?: Constants.DEFAULT_TCP_PORT
+        )
+        val savedDiscovery = settings.getString(WIFI_SERVICE_NAME, "")
+        manualTarget = savedDiscovery == "manual"
+        val serviceName = savedDiscovery.takeIf { it.startsWith("service:") }
+            ?.removePrefix("service:")?.takeIf(String::isNotBlank)
+        selectedDiscovery = if (!manualTarget && (storedIp.isNotBlank() || serviceName != null)) {
+            SelectedDiscoveredDevice(anchor, serviceName)
+        } else null
 
         _uiState.update {
             it.copy(
                 mode = effectiveMode,
                 transportProtocol = savedProtocol,
                 ipAddress = savedIp,
-                port = savedPort,
+                port = if (effectiveMode == ConnectionMode.Usb && selectedDiscovery != null) {
+                    settings.getString(USB_PORT, savedPort)
+                } else savedPort,
+                selectedDiscoveredName = selectedDiscovery?.serviceName,
                 sampleRate = savedSampleRate,
                 channelCount = savedChannelCount,
                 audioFormat = effectiveAudioFormat,
@@ -187,6 +204,55 @@ class AudioStreamViewModel : ViewModel() {
         }
     }
 
+    private fun refreshDiscoverySelections(devices: List<DiscoveredDevice>) {
+        activeDiscovery?.refresh(devices)
+        if (_uiState.value.mode != ConnectionMode.Wifi) return
+        val selected = selectedDiscovery
+        if (selected != null) {
+            if (selected !== activeDiscovery) selected.refresh(devices)
+            displayDiscoveredTarget(selected)
+        } else if (!manualTarget && !isStreamActive()) {
+            // Do not turn a connection already dialling its pre-discovery target into
+            // a connection to an unrelated PC just because that PC is the only one visible.
+            devices.singleOrNull()?.let(::selectDiscoveredDevice)
+        }
+    }
+
+    private fun displayDiscoveredTarget(selection: SelectedDiscoveredDevice) {
+        val name = selection.serviceName ?: return
+        val endpoint = selection.preferredEndpoint
+        if (_uiState.value.selectedDiscoveredName != name) {
+            settings.putString("ip_address", selection.route.anchor.host)
+            settings.putString("port", selection.route.anchor.port.toString())
+            settings.putString(WIFI_SERVICE_NAME, "service:$name")
+        }
+        _uiState.update {
+            it.copy(ipAddress = endpoint.host, port = endpoint.port.toString(), selectedDiscoveredName = name)
+        }
+    }
+
+    fun selectDiscoveredDevice(device: DiscoveredDevice) {
+        if (_uiState.value.mode != ConnectionMode.Wifi || closed.get()) return
+        // Resolve clicks against the current snapshot; an old list item may outlive a network change.
+        val devices = discoveryManager.discoveredDevices.value
+        val current = devices.singleOrNull { it.name == device.name } ?: return
+        val previous = selectedDiscovery
+        val selection = if (previous?.serviceName == current.name) previous else {
+            SelectedDiscoveredDevice(current.endpoints.first(), current.name)
+        }
+        manualTarget = false
+        selectedDiscovery = selection
+        selection.refresh(devices)
+        displayDiscoveredTarget(selection)
+    }
+
+    private fun clearDiscoveredTarget() {
+        selectedDiscovery = null
+        manualTarget = true
+        settings.putString(WIFI_SERVICE_NAME, "manual")
+        _uiState.update { it.copy(selectedDiscoveredName = null) }
+    }
+
     private fun setupAudioEngineObservers() {
         auxiliaryScope.launch {
             _audioEngine.streamState.collect { state ->
@@ -195,8 +261,14 @@ class AudioStreamViewModel : ViewModel() {
                 // An unexpected disconnect (or a failed attempt) surfaces as Error; a
                 // user stop ends in Idle, which must disarm the retry loop instead.
                 when (state) {
-                    StreamState.Error -> if (previous != StreamState.Error) scheduleAutoReconnect()
-                    StreamState.Idle -> if (previous != StreamState.Idle) cancelAutoReconnect()
+                    StreamState.Error -> if (previous != StreamState.Error) {
+                        if (!isStreamActive()) activeDiscovery = null
+                        scheduleAutoReconnect()
+                    }
+                    StreamState.Idle -> if (previous != StreamState.Idle) {
+                        if (!isStreamActive()) activeDiscovery = null
+                        cancelAutoReconnect()
+                    }
                     StreamState.Connecting, StreamState.Streaming -> Unit
                 }
             }
@@ -277,6 +349,7 @@ class AudioStreamViewModel : ViewModel() {
     }
 
     private suspend fun startStreamInternal(autoReconnectAttempt: Boolean = false) {
+        if (isStreamActive()) return
         Logger.i("AudioStreamViewModel", "Starting stream")
         val mode = _uiState.value.mode
         val ip = _uiState.value.ipAddress.trim()
@@ -311,17 +384,33 @@ class AudioStreamViewModel : ViewModel() {
         val sampleRate = _uiState.value.sampleRate
         val channelCount = _uiState.value.channelCount
         val audioFormat = _uiState.value.audioFormat
+        val selection = if (mode == ConnectionMode.Wifi && !manualTarget) {
+            val devices = discoveryManager.discoveredDevices.value
+            refreshDiscoverySelections(devices)
+            // A connect launched before discovery exists can adopt only a later
+            // exact match of its own target, never a guessed service name.
+            (selectedDiscovery ?: SelectedDiscoveredDevice(ConnectionEndpoint(ip, port)).also {
+                selectedDiscovery = it
+            })
+        } else null
+        activeDiscovery = selection
+        val target = selection?.route?.anchor ?: ConnectionEndpoint(ip, port)
 
         _uiState.update { it.copy(streamState = StreamState.Connecting, errorMessage = null, showErrorDialog = false, errorDetails = null) }
 
         try {
             Logger.d("AudioStreamViewModel", "Calling _audioEngine.start()")
-            _audioEngine.start(ip, port, mode, true, sampleRate, channelCount, audioFormat, _uiState.value.transportProtocol)
+            _audioEngine.start(
+                target.host, target.port, mode, true, sampleRate, channelCount, audioFormat,
+                _uiState.value.transportProtocol, discoveredRoute = selection?.route
+            )
             Logger.i("AudioStreamViewModel", "Stream started successfully")
         } catch (e: kotlinx.coroutines.CancellationException) {
+            if (!isStreamActive() && activeDiscovery === selection) activeDiscovery = null
             Logger.i("AudioStreamViewModel", "Stream start cancelled by user")
             return
         } catch (t: Throwable) {
+            if (!isStreamActive() && activeDiscovery === selection) activeDiscovery = null
             // ⚠️ 捕获 Throwable（包含 NoSuchMethodError/NoClassDefFoundError 等 Error）
             Logger.e("AudioStreamViewModel", "Failed to start stream (catch Throwable): ${t.javaClass.name}", t)
 
@@ -332,12 +421,13 @@ class AudioStreamViewModel : ViewModel() {
                 is NoClassDefFoundError -> "Missing runtime class (NoClassDefFoundError): ${t.message}"
                 else -> t.message ?: "Unknown error"
             }
+            val errorEndpoint = selection?.preferredEndpoint ?: target
             val errorDetails = ConnectionErrorHelper.generateErrorDetails(
                 type = errorType,
                 originalMessage = rawMessage,
                 mode = mode,
-                port = port,
-                ip = ip
+                port = errorEndpoint.port,
+                ip = errorEndpoint.host
             )
 
             _uiState.update {
@@ -378,13 +468,14 @@ class AudioStreamViewModel : ViewModel() {
         Logger.i("AudioStreamViewModel", "Setting connection mode to $mode")
 
         val current = _uiState.value
+        if (current.mode == mode) return
 
         val updatedPort = when (mode) {
             ConnectionMode.Usb -> {
-                val parsed = current.port.toIntOrNull()
-                if (parsed == null || parsed <= 0) Constants.DEFAULT_TCP_PORT.toString() else current.port
+                val port = if (selectedDiscovery != null) settings.getString(USB_PORT, current.port) else current.port
+                port.takeIf { it.toIntOrNull() in 1..65535 } ?: Constants.DEFAULT_TCP_PORT.toString()
             }
-            else -> current.port
+            ConnectionMode.Wifi -> selectedDiscovery?.preferredEndpoint?.port?.toString() ?: current.port
         }
 
         // Auto-configure if enabled
@@ -400,8 +491,9 @@ class AudioStreamViewModel : ViewModel() {
             discoveryManager.startDiscovery()
         } else {
             discoveryManager.stopDiscovery()
+            if (selectedDiscovery !== activeDiscovery) selectedDiscovery?.refresh(emptyList())
         }
-        if (updatedPort != current.port) {
+        if (updatedPort != current.port && selectedDiscovery == null) {
             settings.putString("port", updatedPort)
         }
     }
@@ -437,6 +529,12 @@ class AudioStreamViewModel : ViewModel() {
         Logger.d("AudioStreamViewModel", "Setting IP to $ip, restartStream=$restartStream")
         val wasRunning = _uiState.value.streamState == StreamState.Streaming || _uiState.value.streamState == StreamState.Connecting
 
+        // Keep the unchanged half of the visible endpoint when switching to manual entry.
+        val previousPort = _uiState.value.port
+        clearDiscoveredTarget()
+        previousPort.toIntOrNull()?.takeIf { it in 1..65535 }?.let {
+            settings.putString("port", previousPort)
+        }
         _uiState.update {
             it.copy(
                 ipAddress = ip
@@ -453,8 +551,13 @@ class AudioStreamViewModel : ViewModel() {
     }
 
     fun setPort(port: String) {
+        val isUsb = _uiState.value.mode == ConnectionMode.Usb
         // 允许空字符串，以便用户重新输入
         if (port.isBlank()) {
+            if (!isUsb) {
+                clearDiscoveredTarget()
+                settings.putString("ip_address", _uiState.value.ipAddress.trim())
+            }
             _uiState.update { it.copy(port = "") }
             return
         }
@@ -462,9 +565,13 @@ class AudioStreamViewModel : ViewModel() {
         // 验证端口输入是否为数字且在有效范围内
         val portInt = port.toIntOrNull()
         if (portInt != null && portInt in 1..65535) {
+            if (!isUsb) {
+                clearDiscoveredTarget()
+                settings.putString("ip_address", _uiState.value.ipAddress.trim())
+            }
             Logger.d("AudioStreamViewModel", "Setting port to $port")
             _uiState.update { it.copy(port = port) }
-            settings.putString("port", port)
+            settings.putString(if (isUsb && selectedDiscovery != null) USB_PORT else "port", port)
         } else {
             Logger.d("AudioStreamViewModel", "Invalid port input ignored: $port")
             // 如果是非数字字符，我们不更新状态，保持原样
@@ -667,6 +774,7 @@ class AudioStreamViewModel : ViewModel() {
     }
     fun restartDiscovery() {
         discoveryManager.stopDiscovery()
+        if (_uiState.value.mode == ConnectionMode.Wifi) refreshDiscoverySelections(emptyList())
         discoveryManager.startDiscovery()
     }
 

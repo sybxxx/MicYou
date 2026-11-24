@@ -133,6 +133,7 @@ data class AppUiState(
     // Discovery State
     val discoveredDevices: List<DiscoveredDevice> = emptyList(),
     val isDiscovering: Boolean = false,
+    val selectedDiscoveredName: String? = null,
 
     // UI State
     val installMessage: String? = null,
@@ -232,6 +233,7 @@ class MainViewModel : ViewModel() {
                         androidAudioSourceName = audioState.androidAudioSourceName,
                         isEncrypted = audioState.isEncrypted,
                         pairingPrompt = audioState.pairingPrompt,
+                        selectedDiscoveredName = audioState.selectedDiscoveredName,
                         themeMode = settingsState.themeMode,
                         seedColor = settingsState.seedColor,
                         useDynamicColor = settingsState.useDynamicColor,
@@ -280,10 +282,7 @@ class MainViewModel : ViewModel() {
     fun startDiscovery() = audioStreamViewModel.startDiscovery()
     fun stopDiscovery() = audioStreamViewModel.stopDiscovery()
     fun restartDiscovery() = audioStreamViewModel.restartDiscovery()
-    fun selectDiscoveredDevice(device: DiscoveredDevice) {
-        audioStreamViewModel.setIp(device.hostAddress)
-        audioStreamViewModel.setPort(device.port.toString())
-    }
+    fun selectDiscoveredDevice(device: DiscoveredDevice) = audioStreamViewModel.selectDiscoveredDevice(device)
     fun setIp(ip: String, restartStream: Boolean = false) = audioStreamViewModel.setIp(ip, restartStream)
     fun setPort(port: String) = audioStreamViewModel.setPort(port)
     fun setSampleRate(rate: SampleRate) = audioStreamViewModel.setSampleRate(rate)

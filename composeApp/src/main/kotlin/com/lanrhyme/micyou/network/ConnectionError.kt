@@ -76,8 +76,12 @@ object ConnectionErrorHelper {
 
         return when {
             // 网络超时
-            message.contains("timeout", ignoreCase = true) ||
-            message.contains("Timeout", ignoreCase = true) ->
+            generateSequence<Throwable>(exception) { it.cause }.take(8).any { cause ->
+                cause is java.net.SocketTimeoutException ||
+                    cause.message?.let {
+                        it.contains("timeout", ignoreCase = true) || it.contains("timed out", ignoreCase = true)
+                    } == true
+            } ->
                 ConnectionErrorType.NetworkTimeout
 
             // 端口占用

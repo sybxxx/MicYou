@@ -9,30 +9,59 @@ import androidx.core.content.ContextCompat
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.update
-import java.util.Collections
-import com.lanrhyme.micyou.network.DeviceDiscoveryManager
-import com.lanrhyme.micyou.network.DiscoveredDevice
 import com.lanrhyme.micyou.util.ContextHelper
 import com.lanrhyme.micyou.util.Logger
 
 data class DiscoveredDevice(
     val name: String,
-    val hostAddress: String,
+    val hostAddresses: List<String>,
     val port: Int
-)
+) {
+    val hostAddress: String get() = hostAddresses.first()
+    val endpoints: List<ConnectionEndpoint> get() = hostAddresses.map { ConnectionEndpoint(it, port) }
+}
 
-/** Returns an endpoint that can be selected without user input only when it is unambiguous. */
-internal fun selectSingleDiscoveredDevice(devices: List<DiscoveredDevice>): DiscoveredDevice? =
-    devices.singleOrNull()
+/** Only an unconfigured target may follow the sole visible server. */
+internal fun findDiscoveredDevice(
+    devices: List<DiscoveredDevice>,
+    serviceName: String?,
+    anchor: ConnectionEndpoint?
+): DiscoveredDevice? = when {
+    serviceName != null -> devices.singleOrNull { it.name == serviceName }
+    anchor != null -> devices.singleOrNull { anchor in it.endpoints }
+    else -> devices.singleOrNull()
+}
 
-/** Replace an older resolution of the same mDNS service when its IP changes. */
+/** Candidate addresses for a selected service; a saved literal must first match a discovery. */
+internal class SelectedDiscoveredDevice(anchor: ConnectionEndpoint, serviceName: String? = null) {
+    var serviceName: String? = serviceName
+        private set
+    private val endpoints = MutableStateFlow(emptyList<ConnectionEndpoint>())
+    val route = DiscoveredRoute(anchor, endpoints.asStateFlow())
+    val preferredEndpoint: ConnectionEndpoint get() = endpoints.value.firstOrNull() ?: route.anchor
+
+    fun refresh(devices: List<DiscoveredDevice>) {
+        val device = findDiscoveredDevice(devices, serviceName, route.anchor)
+        if (device != null) serviceName = device.name
+        endpoints.value = device?.endpoints.orEmpty()
+    }
+}
+
+/** Keep the other address family if a resolution only included one. A new
+ * resolution replaces the addresses of the families it actually reported. */
 internal fun replaceDiscoveredDevice(
     devices: List<DiscoveredDevice>,
     device: DiscoveredDevice
-): List<DiscoveredDevice> = devices.filterNot {
-    it.name == device.name || (it.hostAddress == device.hostAddress && it.port == device.port)
-} + device
+): List<DiscoveredDevice> {
+    // These are resolved address literals, never DNS names.
+    fun isIpv6(address: String) = ':' in address
+    val previous = devices.firstOrNull { it.name == device.name && it.port == device.port }
+    val reportedFamilies = device.hostAddresses.map(::isIpv6).toSet()
+    val addresses = (device.hostAddresses +
+        previous?.hostAddresses.orEmpty().filter { isIpv6(it) !in reportedFamilies })
+        .distinct().sortedWith(compareBy(::isIpv6))
+    return devices.filterNot { it.name == device.name } + device.copy(hostAddresses = addresses)
+}
 
 class DeviceDiscoveryManager constructor() {
     private val _discoveredDevices = MutableStateFlow<List<DiscoveredDevice>>(emptyList())
@@ -48,11 +77,16 @@ class DeviceDiscoveryManager constructor() {
     private var discoveryActive = false
     private var multicastLock: WifiManager.MulticastLock? = null
     private var lanRouteHeld = false
-    private val pendingResolution: MutableSet<String> = Collections.synchronizedSet(mutableSetOf<String>())
+    private val resolutionLock = Any()
+    private val pendingResolution = mutableMapOf<String, Any>()
 
     fun startDiscovery() {
         if (discoveryActive) return
-        _discoveredDevices.value = emptyList()
+        val generation = synchronized(resolutionLock) {
+            pendingResolution.clear()
+            _discoveredDevices.value = emptyList()
+            ++discoveryGeneration
+        }
         val context = ContextHelper.getContext() ?: run {
             Logger.w("DeviceDiscovery", "No application context available")
             return
@@ -67,7 +101,6 @@ class DeviceDiscoveryManager constructor() {
         val lanNetwork = LanRouteBinder.acquire()
         lanRouteHeld = true
 
-        val generation = ++discoveryGeneration
         discoveryListener = object : NsdManager.DiscoveryListener {
             override fun onDiscoveryStarted(serviceType: String) {
                 if (generation != discoveryGeneration) return
@@ -77,48 +110,52 @@ class DeviceDiscoveryManager constructor() {
             }
 
             override fun onServiceFound(serviceInfo: NsdServiceInfo) {
-                if (generation != discoveryGeneration) return
                 val name = serviceInfo.serviceName
-                if (name !in pendingResolution) {
-                    pendingResolution.add(name)
-                    try {
-                        nsdManager?.resolveService(serviceInfo, object : NsdManager.ResolveListener {
-                            override fun onResolveFailed(info: NsdServiceInfo, errorCode: Int) {
-                                if (generation != discoveryGeneration) return
-                                Logger.w("DeviceDiscovery", "Resolve failed: $errorCode for ${info.serviceName}")
-                                pendingResolution.remove(info.serviceName)
+                val ticket = Any()
+                synchronized(resolutionLock) {
+                    if (generation != discoveryGeneration || name in pendingResolution) return
+                    pendingResolution[name] = ticket
+                }
+                try {
+                    nsdManager?.resolveService(serviceInfo, object : NsdManager.ResolveListener {
+                        override fun onResolveFailed(info: NsdServiceInfo, errorCode: Int) {
+                            synchronized(resolutionLock) {
+                                if (generation != discoveryGeneration || pendingResolution[name] !== ticket) return
+                                pendingResolution.remove(name)
                             }
+                            Logger.w("DeviceDiscovery", "Resolve failed: $errorCode for ${info.serviceName}")
+                        }
 
-                            override fun onServiceResolved(info: NsdServiceInfo) {
-                                if (generation != discoveryGeneration) return
-                                pendingResolution.remove(info.serviceName)
-                                val host = info.host?.hostAddress ?: return
-                                val port = info.port
-                                val resolvedName = info.serviceName
-
-                                Logger.i("DeviceDiscovery", "Resolved: $resolvedName at $host:$port")
-
-                                _discoveredDevices.update { current ->
-                                    replaceDiscoveredDevice(
-                                        current,
-                                        DiscoveredDevice(name = resolvedName, hostAddress = host, port = port)
+                        override fun onServiceResolved(info: NsdServiceInfo) {
+                            val addresses = resolvedHostAddresses(info)
+                            synchronized(resolutionLock) {
+                                if (generation != discoveryGeneration || pendingResolution[name] !== ticket) return
+                                pendingResolution.remove(name)
+                                if (addresses.isNotEmpty() && info.port in 1..65535) {
+                                    Logger.i("DeviceDiscovery", "Resolved: $name at $addresses:${info.port}")
+                                    _discoveredDevices.value = replaceDiscoveredDevice(
+                                        _discoveredDevices.value,
+                                        DiscoveredDevice(name, addresses, info.port)
                                     )
                                 }
                             }
-                        })
-                    } catch (e: Exception) {
-                        Logger.w("DeviceDiscovery", "Failed to resolve $name: ${e.message}")
-                        pendingResolution.remove(name)
+                        }
+                    })
+                } catch (e: Exception) {
+                    synchronized(resolutionLock) {
+                        if (pendingResolution[name] === ticket) pendingResolution.remove(name)
                     }
+                    Logger.w("DeviceDiscovery", "Failed to resolve $name: ${e.message}")
                 }
             }
 
             override fun onServiceLost(serviceInfo: NsdServiceInfo) {
-                if (generation != discoveryGeneration) return
-                Logger.i("DeviceDiscovery", "Service lost: ${serviceInfo.serviceName}")
-                pendingResolution.remove(serviceInfo.serviceName)
-                _discoveredDevices.update { current ->
-                    current.filterNot { it.name == serviceInfo.serviceName }
+                synchronized(resolutionLock) {
+                    if (generation != discoveryGeneration) return
+                    val name = serviceInfo.serviceName
+                    Logger.i("DeviceDiscovery", "Service lost: $name")
+                    pendingResolution.remove(name)
+                    _discoveredDevices.value = _discoveredDevices.value.filterNot { it.name == name }
                 }
             }
 
@@ -175,7 +212,10 @@ class DeviceDiscoveryManager constructor() {
     }
 
     fun stopDiscovery() {
-        discoveryGeneration++
+        synchronized(resolutionLock) {
+            discoveryGeneration++
+            pendingResolution.clear()
+        }
         if (discoveryActive) {
             try {
                 discoveryListener?.let { nsdManager?.stopServiceDiscovery(it) }
@@ -186,10 +226,18 @@ class DeviceDiscoveryManager constructor() {
         discoveryListener = null
         discoveryActive = false
         _isDiscovering.value = false
-        pendingResolution.clear()
         releaseMulticastLock()
         releaseLanRoute()
         // Don't clear device list here — let restartDiscovery() manage it
+    }
+
+    @Suppress("DEPRECATION")
+    private fun resolvedHostAddresses(info: NsdServiceInfo): List<String> {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            val addresses = info.hostAddresses.mapNotNull { it.hostAddress }
+            if (addresses.isNotEmpty()) return addresses
+        }
+        return listOfNotNull(info.host?.hostAddress)
     }
 
     private fun releaseLanRoute() {

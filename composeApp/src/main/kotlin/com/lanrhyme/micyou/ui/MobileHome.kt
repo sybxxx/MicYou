@@ -568,8 +568,8 @@ private fun ConnectionConfigCard(
                     }
                     // Device list
                     state.discoveredDevices.forEach { device ->
-                        val isSelected = state.ipAddress == device.hostAddress &&
-                                state.port == device.port.toString()
+                        val isSelected = state.selectedDiscoveredName?.let { it == device.name }
+                            ?: (device.port.toString() == state.port && state.ipAddress in device.hostAddresses)
                         Surface(
                             shape = MaterialTheme.shapes.small,
                             color = if (isSelected) MaterialTheme.colorScheme.primaryContainer

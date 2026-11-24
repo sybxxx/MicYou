@@ -389,6 +389,8 @@
     <string name="ipAllInterfacesDesc">監聽所有網路介面</string>
     
     <string name="app_name">MicYou</string>
+    <string name="connecting_notification_title">MicYou 正在連線</string>
+    <string name="reconnecting_notification_title">MicYou 正在重新連線</string>
     <string name="streaming_notification_title">MicYou 正在傳輸</string>
     <string name="streaming_notification_text">點擊中斷連線</string>
     <string name="notification_idle_title">MicYou 已開啟</string>

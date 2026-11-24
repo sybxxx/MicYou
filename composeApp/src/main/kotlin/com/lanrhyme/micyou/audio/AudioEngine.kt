@@ -25,7 +25,6 @@ import android.media.audiofx.AutomaticGainControl
 import android.media.audiofx.NoiseSuppressor
 import io.ktor.network.selector.SelectorManager
 import io.ktor.network.sockets.Socket
-import io.ktor.network.sockets.aSocket
 import io.ktor.network.sockets.openReadChannel
 import io.ktor.network.sockets.openWriteChannel
 import io.ktor.utils.io.ByteReadChannel
@@ -48,11 +47,14 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.withTimeout
+import com.lanrhyme.micyou.network.ConnectionEndpoint
+import com.lanrhyme.micyou.network.DiscoveredRoute
 import com.lanrhyme.micyou.network.SECURE_SUITE_V1
 import com.lanrhyme.micyou.network.SessionCrypto
 import com.lanrhyme.micyou.network.UdpCipher
 import com.lanrhyme.micyou.network.SecureChannel
 import com.lanrhyme.micyou.network.SecureChannelException
+import com.lanrhyme.micyou.network.ServerIdentityExpectation
 import com.lanrhyme.micyou.network.LanRouteBinder
 import com.lanrhyme.micyou.network.SecureClientHello
 import com.lanrhyme.micyou.network.SecureConfirm
@@ -279,6 +281,11 @@ internal class ActiveEngineOwner<E : Any, R : Any> {
 
     fun get(): E? = synchronized(lock) { entry?.engine?.get() }
 
+    fun getWithSession(): Pair<E, Any>? = synchronized(lock) {
+        val current = entry ?: return@synchronized null
+        current.engine.get()?.let { it to current.session }
+    }
+
     fun isCurrent(engine: E, session: Any, owner: R): Boolean = synchronized(lock) {
         val current = entry
         current?.engine?.get() === engine && current.session === session && current.owner === owner
@@ -379,6 +386,9 @@ class AudioEngine constructor() {
 
         private fun getActiveEngine(): AudioEngine? = activeEngineOwner.get()
 
+        internal fun getActiveNotificationSession(): Pair<AudioEngine, Any>? =
+            activeEngineOwner.getWithSession()
+
         fun requestDisconnectFromNotification() {
             getActiveEngine()?.stop()
         }
@@ -429,11 +439,6 @@ class AudioEngine constructor() {
     // Peers that answered a secure hello without encryption support; retried
     // as plaintext for the rest of the process lifetime.
     private val plainOnlyPeers = java.util.Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap<String, Boolean>())
-
-    // Peers that completed at least one encrypted handshake on this engine instance.
-    // A missing secure reply from such a peer is a transient network failure, never
-    // evidence of a legacy plaintext-only server.
-    private val securedPeers = java.util.Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap<String, Boolean>())
 
     @Volatile
     private var activeCrypto: SessionCrypto? = null
@@ -502,22 +507,21 @@ class AudioEngine constructor() {
 
     fun wakeupReconnect() { reconnectWakeup.trySend(Unit) }
 
-    fun updateTarget(ip: String, port: Int) {
-        savedIp = ip
-        savedPort = port
-        wakeupReconnect()
-    }
-
     private var noiseSuppressor: NoiseSuppressor? = null
     private var automaticGainControl: AutomaticGainControl? = null
 
-    private var savedIp: String = ""
-    private var savedPort: Int = 0
-    private var savedMode: ConnectionMode = ConnectionMode.Wifi
-    private var savedSampleRate: SampleRate = SampleRate.Rate44100
-    private var savedChannelCount: ChannelCount = ChannelCount.Mono
-    private var savedAudioFormat: AudioFormat = AudioFormat.PCM_16BIT
-    private var savedTransportProtocol: TransportProtocol = TransportProtocol.Both
+    private data class SessionConfig(
+        val endpoint: ConnectionEndpoint,
+        val mode: ConnectionMode,
+        val sampleRate: SampleRate,
+        val channelCount: ChannelCount,
+        val audioFormat: AudioFormat,
+        val transportProtocol: TransportProtocol,
+        val discoveredRoute: DiscoveredRoute?,
+        var authenticatedServerKey: String? = null
+    )
+
+    private var sessionConfig: SessionConfig? = null // guarded by startStopMutex
     @Volatile
     private var desiredRunning: Boolean = false
     @Volatile
@@ -536,21 +540,23 @@ class AudioEngine constructor() {
         sampleRate: SampleRate,
         channelCount: ChannelCount,
         audioFormat: AudioFormat,
-        transportProtocol: TransportProtocol
+        transportProtocol: TransportProtocol,
+        discoveredRoute: DiscoveredRoute? = null
     ) {
         if (!isClient) return
-        check(!closed.get()) { "AudioEngine is closed" }
-        Logger.i("AudioEngine", "Starting Android AudioEngine: mode=$mode, protocol=$transportProtocol, ip=$ip, port=$port, sampleRate=${sampleRate.value}, channels=${channelCount.label}, format=${audioFormat.label}")
-        _lastError.value = null
-        retryLastFailure = true
+        startSession(
+            SessionConfig(
+                ConnectionEndpoint(ip, port), mode, sampleRate, channelCount, audioFormat,
+                transportProtocol, discoveredRoute.takeIf { mode == ConnectionMode.Wifi }
+            )
+        )
+    }
 
-        savedIp = ip
-        savedPort = port
-        savedMode = mode
-        savedSampleRate = sampleRate
-        savedChannelCount = channelCount
-        savedAudioFormat = audioFormat
-        savedTransportProtocol = transportProtocol
+    private suspend fun startSession(config: SessionConfig, expectedGeneration: Long? = null) {
+        check(!closed.get()) { "AudioEngine is closed" }
+        val (endpoint, mode, sampleRate, channelCount, audioFormat, transportProtocol, discoveredRoute) = config
+        val (ip, port) = endpoint
+        Logger.i("AudioEngine", "Starting Android AudioEngine: mode=$mode, protocol=$transportProtocol, ip=$ip, port=$port, sampleRate=${sampleRate.value}, channels=${channelCount.label}, format=${audioFormat.label}")
 
         val connectionComplete = CompletableDeferred<Unit>()
         var launchedJob: Job? = null
@@ -566,6 +572,9 @@ class AudioEngine constructor() {
             startStopMutex.withLock {
                 if (firstAttempt) {
                     if (closed.get()) throw IllegalStateException("AudioEngine is closed")
+                    if (expectedGeneration != null && (!desiredRunning || lifecycleGeneration != expectedGeneration)) {
+                        throw CancellationException("Audio configuration restart was superseded")
+                    }
                     configRestartJob?.takeIf { it !== currentCoroutineContext()[Job] }?.cancel()
                     val wasDesiredRunning = desiredRunning
                     val timedOutJob = stopTimedOutJob
@@ -596,6 +605,9 @@ class AudioEngine constructor() {
                 } else {
                     lifecycleGeneration++
                     val sessionGeneration = lifecycleGeneration
+                    sessionConfig = config
+                    _lastError.value = null
+                    retryLastFailure = true
                     _state.value = StreamState.Connecting
                     val sessionJob = lifecycleScope.launch(start = CoroutineStart.LAZY) {
                     var recorder: AudioRecord? = null
@@ -784,8 +796,12 @@ class AudioEngine constructor() {
                         sessionLastPingReceivedTime.set(SystemClock.elapsedRealtime())
                         var lastSuccessfulAudioRead = SystemClock.elapsedRealtime()
 
+                        val requestedEndpoint = if (mode == ConnectionMode.Usb) endpoint.copy(host = "127.0.0.1") else endpoint
+                        val trustAnchor = discoveredRoute?.anchor ?: requestedEndpoint
+                        var connectedEndpoint = requestedEndpoint
+
                         // Helper function to establish network connection
-                        suspend fun connectTransport(targetIp: String, targetPort: Int) {
+                        suspend fun connectTransport(fallback: ConnectionEndpoint) {
                             if (mode == ConnectionMode.Wifi) LanRouteBinder.refresh()
                             writerJob?.cancel()
                             readerJob?.cancel()
@@ -822,44 +838,60 @@ class AudioEngine constructor() {
                             var newInput: ByteReadChannel? = null
                             var newOutput: ByteWriteChannel? = null
                             var secureSession: SessionCrypto? = null
+                            var selectedEndpoint = fallback
 
                             if (transportProtocol == TransportProtocol.Tcp || transportProtocol == TransportProtocol.Both) {
-                                Logger.i("AudioEngine", "Connecting via TCP to $targetIp:$targetPort")
-                                // An old server silently ignores the secure hello, so a
-                                // fallback re-opens a fresh socket and continues plaintext.
-                                var attemptSecure = mode == ConnectionMode.Wifi &&
-                                    (targetIp !in plainOnlyPeers || SecureChannel.peerRequiresEncryption(secureSettings, targetIp))
+                                // A legacy fallback redials exactly the original endpoint; discovery
+                                // may never carry a plaintext decision over to a different address.
+                                var legacyEndpoint = trustAnchor.takeIf { candidate ->
+                                    discoveredRoute != null && candidate.host in plainOnlyPeers &&
+                                        !SecureChannel.serverIdentityExpectation(secureSettings, trustAnchor, candidate, config.authenticatedServerKey)
+                                            .requiresEncryption
+                                }
                                 while (true) {
-                                    newSelector = SelectorManager(Dispatchers.IO)
-                                    selectorManager = newSelector
-                                    val socketBuilder = aSocket(newSelector!!)
-                                    try {
-                                        newTcpSocket = socketBuilder.tcp().connect(targetIp, targetPort) {
-                                            keepAlive = true
-                                            socketTimeout = 10000L
-                                            sendBufferSize = 8 * 1024
-                                            noDelay = true
+                                    dialTcpCandidates(
+                                        fallback = legacyEndpoint ?: fallback,
+                                        endpoints = if (legacyEndpoint == null) discoveredRoute?.endpoints else null,
+                                        create = ::TcpDialAttempt,
+                                        preferFallbackFirst = legacyEndpoint == null && discoveredRoute != null &&
+                                            fallback == trustAnchor && config.authenticatedServerKey == null &&
+                                            !SecureChannel.peerRequiresEncryption(secureSettings, trustAnchor.host),
+                                        connect = { attempt, candidate ->
+                                            if (mode == ConnectionMode.Wifi) LanRouteBinder.refresh()
+                                            Logger.i("AudioEngine", "Connecting via TCP to ${candidate.host}:${candidate.port}")
+                                            attempt.connect(candidate)
+                                        },
+                                        adopt = { connected, attempt ->
+                                            selectedEndpoint = connected
+                                            val socket = checkNotNull(attempt.socket)
+                                            newTcpSocket = socket
+                                            newSelector = attempt.selector
+                                            selectorManager = attempt.selector
+                                            tcpSocket = socket
+                                            closeConnection = {
+                                                attempt.close()
+                                                sessionUdpSocket?.close()
+                                            }
                                         }
-                                    } catch (e: Exception) {
-                                        Logger.e("AudioEngine", "TCP connect to $targetIp:$targetPort failed: ${e.message}")
-                                        throw e
-                                    }
-                                    newInput = newTcpSocket.openReadChannel()
-                                    newOutput = newTcpSocket.openWriteChannel(autoFlush = true)
+                                    )
+                                    val connectedSocket = checkNotNull(newTcpSocket)
+                                    val targetIp = selectedEndpoint.host
+                                    val expectation = if (mode == ConnectionMode.Wifi) {
+                                        SecureChannel.serverIdentityExpectation(secureSettings, trustAnchor, selectedEndpoint, config.authenticatedServerKey)
+                                    } else null
+                                    val attemptSecure = expectation != null &&
+                                        (expectation.requiresEncryption || (legacyEndpoint == null && targetIp !in plainOnlyPeers))
+                                    newInput = connectedSocket.openReadChannel()
+                                    newOutput = connectedSocket.openWriteChannel(autoFlush = true)
                                     // Publish before handshake/pairing: stop must close a partially started socket too.
-                                    tcpSocket = newTcpSocket
                                     input = newInput
                                     output = newOutput
-                                    closeConnection = {
-                                        newTcpSocket?.close()
-                                        sessionUdpSocket?.close()
-                                    }
                                     startStopMutex.withLock {
                                         if (lifecycleGeneration != sessionGeneration || !desiredRunning) {
-                                            newTcpSocket.close()
+                                            closeConnection()
                                             throw CancellationException("Audio session superseded during TCP connection")
                                         }
-                                        activeTcpSocket = newTcpSocket
+                                        activeTcpSocket = connectedSocket
                                         activeInput = newInput
                                         activeOutput = newOutput
                                     }
@@ -871,8 +903,7 @@ class AudioEngine constructor() {
                                     newInput.readFully(responseBuffer, 0, responseBuffer.size)
 
                                     if (!responseBuffer.decodeToString().equals(HANDSHAKE_SERVER)) {
-                                        newTcpSocket.close()
-                                        newSelector.close()
+                                        closeConnection()
                                         val msg = getString(R.string.errorHandshakeFailedDetailed)
                                         Logger.e("AudioEngine", "Handshake failed: received ${responseBuffer.decodeToString()}")
                                         throw IllegalStateException(msg)
@@ -881,27 +912,26 @@ class AudioEngine constructor() {
 
                                     val inChannel = newInput
                                     val outChannel = newOutput
-                                    if (attemptSecure && inChannel != null && outChannel != null) {
-                                        when (val outcome = negotiateSecureTransport(inChannel, outChannel, targetIp, targetIp in securedPeers || SecureChannel.peerRequiresEncryption(secureSettings, targetIp))) {
+                                    if (attemptSecure && expectation != null && inChannel != null && outChannel != null) {
+                                        when (val outcome = negotiateSecureTransport(inChannel, outChannel, targetIp, expectation)) {
                                             is SecureNegotiation.Session -> {
                                                 secureSession = outcome.crypto
                                                 activeCrypto = outcome.crypto
-                                                securedPeers.add(targetIp)
+                                                config.authenticatedServerKey = SecureChannel.pairedServerStorageKey(outcome.serverPublicKey)
+                                                SecureChannel.rememberPairedServer(secureSettings, outcome.serverPublicKey, trustAnchor.host)
                                                 SecureChannel.pinSecurePeer(secureSettings, targetIp)
                                                 _sessionEncrypted.value = true
                                                 Logger.i("AudioEngine", "Secure transport established with $targetIp")
                                             }
                                             is SecureNegotiation.FallBackToPlain -> {
                                                 plainOnlyPeers.add(targetIp)
-                                                attemptSecure = false
-                                                runCatching { newTcpSocket?.close() }
-                                                newSelector.close()
+                                                legacyEndpoint = selectedEndpoint
+                                                closeConnection()
                                                 Logger.i("AudioEngine", "Peer $targetIp lacks encryption support; reconnecting in plaintext")
                                                 continue
                                             }
                                             is SecureNegotiation.Failure -> {
-                                                runCatching { newTcpSocket?.close() }
-                                                newSelector.close()
+                                                closeConnection()
                                                 if (outcome.retryable) throw java.io.IOException(outcome.message)
                                                 throw SecureChannelException(outcome.message)
                                             }
@@ -925,6 +955,7 @@ class AudioEngine constructor() {
                                 }
                             }
 
+                            val (targetIp, targetPort) = selectedEndpoint
                             var newUdpSocket: DatagramSocket? = null
                             var newUdpAddress: InetSocketAddress? = null
                             if (mode == ConnectionMode.Wifi && transportProtocol == TransportProtocol.Both) {
@@ -1093,6 +1124,7 @@ class AudioEngine constructor() {
                             } else null
 
                             channel.send(MessageWrapper(mute = MuteMessage(_isMuted.value)))
+                            connectedEndpoint = selectedEndpoint
                         }
 
                         fun drainAudioRecord() {
@@ -1108,9 +1140,8 @@ class AudioEngine constructor() {
                             }
                         }
 
-                        val targetIp = if (mode == ConnectionMode.Usb) "127.0.0.1" else ip
                         drainAudioRecord()
-                        connectTransport(targetIp, port)
+                        connectTransport(requestedEndpoint)
                         drainAudioRecord()
                         _state.value = StreamState.Streaming
                         _lastError.value = null
@@ -1171,10 +1202,8 @@ class AudioEngine constructor() {
                                         drainAudioRecord()
 
                                         try {
-                                            val currentTargetIp = if (savedMode == ConnectionMode.Usb) "127.0.0.1" else savedIp
-                                            val currentTargetPort = savedPort
-                                            Logger.i("AudioEngine", "Retrying connection to $currentTargetIp:$currentTargetPort")
-                                            connectTransport(currentTargetIp, currentTargetPort)
+                                            Logger.i("AudioEngine", "Retrying connection to ${connectedEndpoint.host}:${connectedEndpoint.port}")
+                                            connectTransport(connectedEndpoint)
 
                                             drainAudioRecord()
                                             opusPendingSamples = 0
@@ -1389,10 +1418,21 @@ class AudioEngine constructor() {
                         connectionComplete.completeExceptionally(CancellationException("Audio session ended before startup completed"))
                         Logger.d("AudioEngine", "Cleaning up resources for generation $sessionGeneration")
                         channel.close()
-                        if (lanRouteHeld) LanRouteBinder.release()
+                            if (lanRouteHeld) LanRouteBinder.release()
                         audioChannel.close()
                         writerJob?.cancel()
                         readerJob?.cancel()
+                            // A native recorder stop can block; never hold a network transport while waiting for it.
+                            try {
+                                closeConnection()
+                            } catch (e: Exception) {
+                                Logger.w("AudioEngine", "Failed to close connection: ${e.message}")
+                            }
+                            try {
+                                selectorManager?.close()
+                            } catch (e: Exception) {
+                                Logger.w("AudioEngine", "Failed to close selector manager: ${e.message}")
+                            }
                         activeCrypto = null
                         _sessionEncrypted.value = false
                         pairingDeferred?.cancel()
@@ -1411,16 +1451,6 @@ class AudioEngine constructor() {
                             }
                         } catch (e: Exception) {
                             Logger.w("AudioEngine", "AudioRecord teardown did not complete cleanly: ${e.message}")
-                        }
-                        try {
-                            closeConnection()
-                        } catch (e: Exception) {
-                            Logger.w("AudioEngine", "Failed to close connection: ${e.message}")
-                        }
-                        try {
-                            selectorManager?.close()
-                        } catch (e: Exception) {
-                            Logger.w("AudioEngine", "Failed to close selector manager: ${e.message}")
                         }
                         try {
                             sessionNoiseSuppressor?.release()
@@ -1558,7 +1588,7 @@ class AudioEngine constructor() {
     }
 
     private sealed class SecureNegotiation {
-        data class Session(val crypto: SessionCrypto) : SecureNegotiation()
+        data class Session(val crypto: SessionCrypto, val serverPublicKey: ByteArray) : SecureNegotiation()
         object FallBackToPlain : SecureNegotiation()
         data class Failure(val message: String, val retryable: Boolean = false) : SecureNegotiation()
     }
@@ -1574,7 +1604,7 @@ class AudioEngine constructor() {
         input: ByteReadChannel,
         output: ByteWriteChannel,
         peer: String,
-        peerPreviouslySecured: Boolean
+        expectation: ServerIdentityExpectation
     ): SecureNegotiation {
         return try {
             val seed = SecureChannel.obtainIdentitySeed(secureSettings)
@@ -1611,10 +1641,8 @@ class AudioEngine constructor() {
                 header
             } catch (e: Exception) {
                 currentCoroutineContext().ensureActive()
-                if (peerPreviouslySecured) {
-                    // This peer completed an encrypted handshake before, so it is not a
-                    // legacy server. A missing reply is a transient network failure that
-                    // must be retried, never a reason to silently downgrade to plaintext.
+                if (expectation.requiresEncryption) {
+                    // A paired or alternate address must never silently fall back to plaintext.
                     return SecureNegotiation.Failure("secure reply from $peer failed: ${e.message}", retryable = true)
                 }
                 Logger.w("AudioEngine", "No secure reply from $peer (${e.message}); treating as legacy server")
@@ -1635,7 +1663,7 @@ class AudioEngine constructor() {
 
             // A legacy-capable server signals "plaintext only" with suite 0.
             if (serverHello.suite == 0) {
-                return if (peerPreviouslySecured) SecureNegotiation.Failure("secure peer refused encryption")
+                return if (expectation.requiresEncryption) SecureNegotiation.Failure("secure peer refused encryption")
                     else SecureNegotiation.FallBackToPlain
             }
             if (serverHello.suite != SECURE_SUITE_V1) return SecureNegotiation.Failure("unsupported secure suite")
@@ -1654,12 +1682,16 @@ class AudioEngine constructor() {
             ) {
                 return SecureNegotiation.Failure("server transcript signature invalid")
             }
+            if (!expectation.matches(serverHello.identityPubKey)) {
+                return SecureNegotiation.Failure("server identity does not match the selected peer")
+            }
 
             val shared = SecureChannel.x25519SharedSecret(ephPrivate, serverHello.ephemeralPubKey)
             val transcript = SecureChannel.transcriptHash(chCore, shCore)
             val secrets = SecureChannel.deriveHandshakeSecrets(transcript, shared)
 
-            val knownServer = SecureChannel.pairedServerDisplayName(secureSettings, serverHello.identityPubKey) != null
+            val knownServer = expectation.allowRememberedPairing &&
+                SecureChannel.pairedServerDisplayName(secureSettings, serverHello.identityPubKey) != null
             if (!knownServer) {
                 val sas = SecureChannel.sasText(secrets.sasValue)
                 Logger.i("AudioEngine", "First secure contact with $peer; SAS $sas")
@@ -1709,9 +1741,7 @@ class AudioEngine constructor() {
             if (!accepted) {
                 return SecureNegotiation.Failure("server rejected the secure session")
             }
-            SecureChannel.rememberPairedServer(secureSettings, serverHello.identityPubKey, peer)
-            SecureChannel.pinSecurePeer(secureSettings, peer)
-            SecureNegotiation.Session(session)
+            SecureNegotiation.Session(session, serverHello.identityPubKey)
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -2073,9 +2103,9 @@ class AudioEngine constructor() {
         val request = ++configRestartRequest
         configRestartJob?.cancel()
         configRestartJob = lifecycleScope.launch {
-            val capturedGeneration = startStopMutex.withLock {
+            val (capturedGeneration, restartConfig) = startStopMutex.withLock {
                 if (!desiredRunning || request != configRestartRequest) return@launch
-                lifecycleGeneration
+                lifecycleGeneration to (sessionConfig ?: return@launch)
             }
 
             try {
@@ -2088,7 +2118,7 @@ class AudioEngine constructor() {
                 }
                 if (!shouldRestart) return@launch
 
-                start(savedIp, savedPort, savedMode, true, savedSampleRate, savedChannelCount, savedAudioFormat, savedTransportProtocol)
+                startSession(restartConfig, expectedGeneration = capturedGeneration)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {

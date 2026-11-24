@@ -419,6 +419,79 @@ class SecureChannelTest {
     }
 
     @Test
+    fun pairedAnchorRequiresTheSameServerIdentityAtANewEndpoint() {
+        val settings = FakeSettings()
+        val anchor = ConnectionEndpoint("fd00::141", 8554)
+        val replacement = ConnectionEndpoint("192.168.0.141", 8554)
+        val pairedKey = ByteArray(32) { 11 }
+        val otherKnownKey = ByteArray(32) { 22 }
+        SecureChannel.rememberPairedServer(settings, pairedKey, anchor.host)
+        SecureChannel.rememberPairedServer(settings, otherKnownKey, replacement.host)
+
+        val expectation = SecureChannel.serverIdentityExpectation(settings, anchor, replacement, null)
+
+        assertTrue(expectation.requiresEncryption)
+        assertTrue(expectation.allowRememberedPairing)
+        assertTrue(expectation.matches(pairedKey))
+        assertFalse(expectation.matches(otherKnownKey))
+    }
+
+    @Test
+    fun unpairedDiscoveryAlternateRequiresEncryptionAndFreshPairing() {
+        val settings = FakeSettings()
+        val anchor = ConnectionEndpoint("fd00::141", 8554)
+        val alternate = ConnectionEndpoint("192.168.0.141", 8554)
+        val cachedKey = ByteArray(32) { 11 }
+        SecureChannel.rememberPairedServer(settings, cachedKey, alternate.host)
+
+        val expectation = SecureChannel.serverIdentityExpectation(settings, anchor, alternate, null)
+
+        assertTrue(expectation.requiresEncryption)
+        assertFalse(expectation.allowRememberedPairing)
+        assertFalse(SecureChannel.serverIdentityExpectation(settings, anchor, anchor, null).requiresEncryption)
+    }
+
+    @Test
+    fun currentSessionIdentityOverridesAnyOlderAnchorPairing() {
+        val settings = FakeSettings()
+        val anchor = ConnectionEndpoint("fd00::141", 8554)
+        val earlier = ByteArray(32) { 11 }
+        val authenticated = ByteArray(32) { 22 }
+        SecureChannel.rememberPairedServer(settings, earlier, anchor.host)
+
+        val expectation = SecureChannel.serverIdentityExpectation(
+            settings, anchor, anchor, SecureChannel.pairedServerStorageKey(authenticated)
+        )
+
+        assertTrue(expectation.requiresEncryption)
+        assertTrue(expectation.matches(authenticated))
+        assertFalse(expectation.matches(earlier))
+    }
+
+    @Test
+    fun ambiguousAnchorHistoryCannotAuthorizeAnAlternateAddress() {
+        val settings = FakeSettings()
+        val anchor = ConnectionEndpoint("fd00::141", 8554)
+        val alternate = ConnectionEndpoint("192.168.0.141", 8554)
+        val original = ByteArray(32) { 11 }
+        val reusedAddress = ByteArray(32) { 22 }
+        SecureChannel.rememberPairedServer(settings, original, anchor.host)
+        SecureChannel.rememberPairedServer(settings, reusedAddress, anchor.host)
+
+        val ambiguous = SecureChannel.serverIdentityExpectation(settings, anchor, alternate, null)
+        assertTrue(ambiguous.requiresEncryption)
+        assertFalse(ambiguous.matches(original))
+        assertFalse(ambiguous.matches(reusedAddress))
+        assertFalse(ambiguous.allowRememberedPairing)
+
+        val authenticated = SecureChannel.serverIdentityExpectation(
+            settings, anchor, alternate, SecureChannel.pairedServerStorageKey(original)
+        )
+        assertTrue(authenticated.matches(original))
+        assertFalse(authenticated.matches(reusedAddress))
+    }
+
+    @Test
     fun selfTest_passesOnThisBuild() {
         assertTrue(SecureChannel.selfTest())
     }

@@ -242,6 +242,8 @@
     <string name="softwareIntro">软件介绍项</string>
     <string name="start">开始动作</string>
     <string name="statusConnecting">连接中...</string>
+    <string name="connecting_notification_title">MicYou 正在进行连接操作</string>
+    <string name="reconnecting_notification_title">MicYou 正在进行重新连接操作</string>
     <string name="statusError">错误的</string>
     <string name="statusIdle">闲置的</string>
     <string name="statusLabel">状态标签项: </string>

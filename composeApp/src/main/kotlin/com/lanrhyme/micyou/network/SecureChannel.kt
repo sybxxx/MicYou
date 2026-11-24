@@ -34,6 +34,17 @@ class SessionKeys(
 
 class HandshakeSecrets(val keys: SessionKeys, val sasValue: Long)
 
+/** Policy for the selected peer, independent of the mDNS address used to dial it. */
+internal data class ServerIdentityExpectation(
+    val pinnedKeys: Set<String>,
+    val requiresEncryption: Boolean,
+    val allowRememberedPairing: Boolean,
+    private val ambiguousAlternate: Boolean
+) {
+    fun matches(publicKey: ByteArray): Boolean =
+        !ambiguousAlternate && (pinnedKeys.isEmpty() || SecureChannel.pairedServerStorageKey(publicKey) in pinnedKeys)
+}
+
 object SecureChannel {
     private const val LOG_TAG = "SecureChannel"
 
@@ -43,6 +54,28 @@ object SecureChannel {
 
     fun pinSecurePeer(settings: Settings, peer: String) {
         settings.putBoolean("secure_required_peer_$peer", true)
+    }
+
+    internal fun serverIdentityExpectation(
+        settings: Settings,
+        anchor: ConnectionEndpoint,
+        target: ConnectionEndpoint,
+        authenticatedServerKey: String?
+    ): ServerIdentityExpectation {
+        val pairings = settings.getStringEntries(SECURE_PAIRED_SERVER_KEY_PREFIX)
+        // Older releases stored the IP alone; keep that association as the
+        // authoritative anchor, not the unverified address from discovery.
+        val pinnedKeys = authenticatedServerKey?.let(::setOf)
+            ?: pairings.filterValues { it == anchor.host }.keys
+        val isAlternate = target != anchor
+        val ambiguousAlternate = isAlternate && pinnedKeys.size > 1
+        return ServerIdentityExpectation(
+            pinnedKeys = pinnedKeys,
+            requiresEncryption = isAlternate || pinnedKeys.isNotEmpty() ||
+                peerRequiresEncryption(settings, anchor.host) || peerRequiresEncryption(settings, target.host),
+            allowRememberedPairing = !isAlternate || pinnedKeys.size == 1,
+            ambiguousAlternate = ambiguousAlternate
+        )
     }
 
     private val proto = ProtoBuf { }

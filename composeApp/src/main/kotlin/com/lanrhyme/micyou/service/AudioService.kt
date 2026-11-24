@@ -14,30 +14,53 @@
  */
 
 package com.lanrhyme.micyou.service
-import com.lanrhyme.micyou.R
 
+import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
-import android.content.res.Configuration
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
+import android.content.res.Configuration
+import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
-import android.net.wifi.WifiManager
-import android.app.PendingIntent
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
-import com.lanrhyme.micyou.audio.AudioEngine
 import com.lanrhyme.micyou.MainActivity
+import com.lanrhyme.micyou.R
+import com.lanrhyme.micyou.audio.AudioEngine
 import com.lanrhyme.micyou.util.AppLanguage
 import com.lanrhyme.micyou.util.appLocale
 import com.lanrhyme.micyou.util.getString
+import com.lanrhyme.micyou.viewmodel.StreamState
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
+
+internal enum class AudioNotificationPhase {
+    Idle, Connecting, Reconnecting, Streaming;
+
+    fun after(state: StreamState): AudioNotificationPhase = when (state) {
+        StreamState.Idle, StreamState.Error -> Idle
+        StreamState.Connecting -> if (this == Streaming || this == Reconnecting) Reconnecting else Connecting
+        StreamState.Streaming -> Streaming
+    }
+}
+
 class AudioService : Service() {
 
+    private val notificationScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private var notificationObserver: Job? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
     /** Whether this instance has called startForeground. */
@@ -60,15 +83,17 @@ class AudioService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            ACTION_START -> startForegroundService(
-                intent.getBooleanExtra(EXTRA_USE_WIFI_LOCK, false),
-                streaming = true
-            )
-            ACTION_START_IDLE -> startForegroundService(useWifiLock = false, streaming = false)
+            ACTION_START -> startMicrophoneForeground(intent.getBooleanExtra(EXTRA_USE_WIFI_LOCK, false))
+            // A queued idle request must not demote an active mic foreground service.
+            ACTION_START_IDLE -> if (notificationObserver?.isActive != true) enterIdle()
             // Streaming ended. A fresh instance means the service was already stopped
             // (the app was swiped away): there is no notification to downgrade, and
             // startForeground from the background would throw on Android 12+.
-            ACTION_STOP -> if (inForeground) enterIdle() else stopSelf()
+            ACTION_STOP -> {
+                if (!inForeground) stopSelf()
+                // A previous session's queued stop must not demote a replacement mic service.
+                else if (!AudioEngine.isStreaming()) enterIdle()
+            }
             ACTION_DISCONNECT -> {
                 AudioEngine.requestDisconnectFromNotification()
                 enterIdle()
@@ -80,16 +105,57 @@ class AudioService : Service() {
         return START_NOT_STICKY
     }
 
-    private fun startForegroundService(useWifiLock: Boolean, streaming: Boolean) {
-        if (streaming) {
-            acquireSessionLocks(useWifiLock)
-        } else {
-            releaseSessionLocks()
+    private fun startMicrophoneForeground(useWifiLock: Boolean) {
+        stopObservingStream()
+        val session = AudioEngine.getActiveNotificationSession()
+        val initial = AudioNotificationPhase.Idle.after(session?.first?.currentStreamState() ?: StreamState.Idle)
+        if (session == null || initial == AudioNotificationPhase.Idle) {
+            // A pending ACTION_START may be delivered after the engine has already stopped.
+            enterIdle()
+            return
         }
-        val notification = createNotification(streaming)
+        val (engine, owner) = session
 
+        acquireSessionLocks(useWifiLock)
+        showForeground(initial)
+        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        notificationObserver = notificationScope.launch {
+            var shown = initial
+            engine.streamState.first { state ->
+                val current = AudioEngine.getActiveNotificationSession()
+                // The same engine can own a fresh recorder session after a stop/start.
+                if (current != null && (current.first !== engine || current.second !== owner)) return@first true
+                val next = shown.after(if (current == null) StreamState.Idle else state)
+                if (next != shown) {
+                    // Only update the text here. The mic type and locks stay held until ACTION_STOP.
+                    updateNotification(manager, next)
+                    shown = next
+                }
+                next == AudioNotificationPhase.Idle
+            }
+        }
+    }
+
+    private fun updateNotification(manager: NotificationManager, phase: AudioNotificationPhase) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) return
+        try {
+            manager.notify(NOTIFICATION_ID, createNotification(phase))
+        } catch (_: SecurityException) {
+            // Android may revoke notification permission between the check and update.
+        }
+    }
+
+    private fun stopObservingStream() {
+        notificationObserver?.cancel()
+        notificationObserver = null
+    }
+
+    private fun showForeground(phase: AudioNotificationPhase) {
+        val notification = createNotification(phase)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            val type = if (streaming) {
+            val type = if (phase != AudioNotificationPhase.Idle) {
                 ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
             } else {
                 ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
@@ -102,18 +168,9 @@ class AudioService : Service() {
     }
 
     private fun enterIdle() {
+        stopObservingStream()
         releaseSessionLocks()
-        val notification = createNotification(streaming = false)
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(
-                NOTIFICATION_ID,
-                notification,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
-            )
-        } else {
-            startForeground(NOTIFICATION_ID, notification)
-        }
+        showForeground(AudioNotificationPhase.Idle)
     }
 
     private fun acquireSessionLocks(useWifiLock: Boolean) {
@@ -152,6 +209,7 @@ class AudioService : Service() {
         super.onTaskRemoved(rootIntent)
         // Swiping the app away exits it, streaming or not. The engine belongs to the
         // activity's view model and stops with it anyway; stop it here explicitly.
+        stopObservingStream()
         AudioEngine.requestDisconnectFromNotification()
         releaseSessionLocks()
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
@@ -168,17 +226,22 @@ class AudioService : Service() {
     }
 
     override fun onDestroy() {
+        notificationScope.cancel()
         releaseSessionLocks()
         super.onDestroy()
     }
 
-    private fun createNotification(streaming: Boolean): Notification {
-        val (title, text) = if (streaming) {
-            resolveNotificationText()
-        } else {
-            resolveIdleNotificationText()
+    private fun createNotification(phase: AudioNotificationPhase): Notification {
+        val context = localizedContext()
+        val title = when (phase) {
+            AudioNotificationPhase.Idle -> R.string.notification_idle_title
+            AudioNotificationPhase.Connecting -> R.string.connecting_notification_title
+            AudioNotificationPhase.Reconnecting -> R.string.reconnecting_notification_title
+            AudioNotificationPhase.Streaming -> R.string.streaming_notification_title
         }
-        val contentIntent = if (streaming) {
+        val active = phase != AudioNotificationPhase.Idle
+        val text = if (active) R.string.streaming_notification_text else R.string.notification_idle_text
+        val contentIntent = if (active) {
             val disconnectIntent = Intent(this, AudioService::class.java).apply { action = ACTION_DISCONNECT }
             PendingIntent.getService(
                 this,
@@ -199,8 +262,8 @@ class AudioService : Service() {
         }
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle(title)
-            .setContentText(text)
+            .setContentTitle(context.getString(title))
+            .setContentText(context.getString(text))
             .setSmallIcon(R.mipmap.ic_launcher)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setOngoing(true)
@@ -208,18 +271,6 @@ class AudioService : Service() {
             .setShowWhen(false)
             .setContentIntent(contentIntent)
             .build()
-    }
-
-    private fun resolveNotificationText(): Pair<String, String> {
-        val context = localizedContext()
-        return context.getString(R.string.streaming_notification_title) to
-            context.getString(R.string.streaming_notification_text)
-    }
-
-    private fun resolveIdleNotificationText(): Pair<String, String> {
-        val context = localizedContext()
-        return context.getString(R.string.notification_idle_title) to
-            context.getString(R.string.notification_idle_text)
     }
 
     /**

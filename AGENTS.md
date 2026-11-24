@@ -28,8 +28,9 @@ The local 2.2.0 candidates retain encrypted Wi-Fi pairing, fail-closed
 secure reconnect and audio-health recovery. Secure MessageWrapper fields are
 100–103 (upstream 7 and 8 remain plugin and stats messages); Ping health fields
 are 2 and 3. The initial alpha-to-stable migration upgrades both ends together.
-The `local.2` desktop visualization fix and `local.3` Android Opus CPU fix do
-not change that protocol and do not require replacing the other end. See
+`local.2` (desktop visualization), `local.3` (Android Opus CPU), and `local.4`
+(Android Wi-Fi recovery) do not change the protocol and can be installed
+without replacing the other end. See
 `docs/local-migration.md` for retained behavior, upgrade checks and rollback.
 Windows user installers must be built with `src-tauri/installer.iss` (Inno Setup),
 never the Tauri NSIS output; use `bun run tauri build --no-bundle` then `iscc`.
@@ -47,7 +48,7 @@ never the Tauri NSIS output; use `bun run tauri build --no-bundle` then `iscc`.
 - `service/AudioService.kt`: foreground service, type `microphone` while streaming and `mediaPlayback` while idle; returns `START_NOT_STICKY` and never reschedules itself (exact alarms throw on Android 14+); swiping the app away stops streaming, removes the notification and stops the service
 - `service/MicYouTileService.kt`: Quick Settings tile that starts and stops streaming
 - Settings live in SharedPreferences (`android_mic_prefs`), not DataStore, modelled as enums in `audio/AudioSettings.kt`; wire constants live in `util/Constants.kt` and `network/Protocol.kt`
-- `AudioStreamViewModel` owns initial connection and whole-session retry policy: `auto_start` connects once microphone permission is granted; `auto_reconnect` retries a failed session `reconnect_retry_count` times every `reconnect_interval_seconds`, then repeats every `reconnect_periodic_minutes` (0 = off). Established-stream network recovery stays inside `AudioEngine`, retaining the recording handle. An explicit stop or manual connect cancels retries; only final failure opens the error dialog
+- `AudioStreamViewModel` owns the selected mDNS service and whole-session retry policy: `auto_start` connects once microphone permission is granted; `auto_reconnect` retries a failed session `reconnect_retry_count` times every `reconnect_interval_seconds`, then repeats every `reconnect_periodic_minutes` (0 = off). `AudioEngine` handles bounded TCP dials and established-stream recovery, retaining the recording handle. Discovery can replace an in-flight dial only for the selected service, not a live connection or a manual target. An address change does not authenticate the server or relax its encryption requirement. Explicit stop and manual connect cancel pending retries
 - Haze is reached only through `ui/compose/haze/HazeBridge.kt`, which exists twice: `src/normal` maps onto Haze 2 `hazeBlur`, `src/compat` draws a plain background
 
 ### api21 compat build
